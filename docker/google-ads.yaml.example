@@ -1,0 +1,6 @@
+developer_token: "REPLACE_WITH_DEV_TOKEN"
+client_id: "REPLACE_WITH_OAUTH_CLIENT_ID"
+client_secret: "REPLACE_WITH_OAUTH_CLIENT_SECRET"
+refresh_token: "REPLACE_WITH_REFRESH_TOKEN"
+login_customer_id: "REPLACE_WITH_MANAGER_ID_OR_REMOVE"
+use_proto_plus: true

@@ -1,0 +1,127 @@
+"""Models for product import workflow."""
+from django.db import models
+
+from catalog.models import Attribute
+
+
+class ProductImport(models.Model):
+    class Status(models.TextChoices):
+        UPLOADED = "uploaded", "Uploaded"
+        PARSED = "parsed", "Parsed"
+        MAPPED = "mapped", "Mapped"
+        COMMITTED = "committed", "Committed"
+        FAILED = "failed", "Failed"
+
+    created_by = models.CharField(max_length=100, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    source_file = models.FileField(upload_to="imports/%Y/%m/%d/")
+    original_filename = models.CharField(max_length=255, blank=True)
+    file_type = models.CharField(max_length=20, blank=True)
+
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.UPLOADED)
+    row_count = models.IntegerField(default=0)
+    error_count = models.IntegerField(default=0)
+
+    def __str__(self) -> str:
+        return f"Import {self.id} [{self.status}]"
+
+
+class ImportColumnMap(models.Model):
+    product_import = models.OneToOneField(
+        ProductImport,
+        on_delete=models.CASCADE,
+        related_name="column_map",
+    )
+    mapping_json = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self) -> str:
+        return f"ColumnMap {self.product_import_id}"
+
+
+class ImportRow(models.Model):
+    product_import = models.ForeignKey(
+        ProductImport,
+        on_delete=models.CASCADE,
+        related_name="rows",
+    )
+    row_number = models.IntegerField()
+    raw = models.JSONField()
+    normalized = models.JSONField(null=True, blank=True)
+    errors = models.JSONField(null=True, blank=True)
+    is_valid = models.BooleanField(default=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["product_import", "row_number"],
+                name="uniq_import_row_number",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["product_import", "row_number"], name="idx_import_row_number"),
+            models.Index(fields=["product_import", "is_valid"], name="idx_import_row_valid"),
+        ]
+
+    def __str__(self) -> str:
+        return f"Row {self.row_number} ({self.product_import_id})"
+
+
+class CategoryBatch(models.Model):
+    class Status(models.TextChoices):
+        READY = "ready", "Ready"
+        ATTR_MAPPED = "attr_mapped", "Attr Mapped"
+        TRANSLATED = "translated", "Translated"
+        KEYWORDS_FETCHED = "keywords_fetched", "Keywords Fetched"
+        FAILED = "failed", "Failed"
+
+    product_import = models.ForeignKey(
+        ProductImport,
+        on_delete=models.CASCADE,
+        related_name="category_batches",
+    )
+    category = models.CharField(max_length=255)
+    status = models.CharField(max_length=30, choices=Status.choices, default=Status.READY)
+    product_count = models.IntegerField(default=0)
+    variant_count = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self) -> str:
+        return f"Batch {self.id} {self.category} [{self.status}]"
+
+
+class AttributeMapping(models.Model):
+    class Strategy(models.TextChoices):
+        MATCHED = "matched", "Matched"
+        CREATED = "created", "Created"
+        IGNORED = "ignored", "Ignored"
+
+    category_batch = models.ForeignKey(
+        CategoryBatch,
+        on_delete=models.CASCADE,
+        related_name="attribute_mappings",
+    )
+    source_attr_name = models.CharField(max_length=255)
+    target_attribute = models.ForeignKey(
+        Attribute,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="import_mappings",
+    )
+    strategy = models.CharField(max_length=20, choices=Strategy.choices)
+    notes = models.TextField(blank=True)
+    confidence = models.DecimalField(max_digits=6, decimal_places=4, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["category_batch", "source_attr_name"],
+                name="uniq_batch_source_attr",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.source_attr_name} ({self.strategy})"

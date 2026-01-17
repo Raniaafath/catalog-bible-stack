@@ -1,0 +1,7 @@
+Django
+djangorestframework
+psycopg[binary]
+python-dotenv
+gunicorn
+whitenoise
+openai
