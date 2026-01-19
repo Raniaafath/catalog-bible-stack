@@ -1,6 +1,25 @@
 from api.v1.views.catalog import AttributeViewSet, AttributeValueViewSet, ProductTypeViewSet, ProductViewSet, VariantViewSet
 from api.v1.views.content import LocaleViewSet
+from api.v1.views.importer import (
+    CategoryBatchViewSet,
+    ImportAssignCategoryView,
+    ImportMapAttributesView,
+    ImportPreviewView,
+    ImportUploadView,
+    ProductImportViewSet,
+)
+from api.v1.views.keywords import (
+    KeywordPlannerRunApproveView,
+    KeywordPlannerRunCreateView,
+    KeywordPlannerRunDetailView,
+    KeywordViewSet,
+    MetricViewSet,
+    PlannerRunKeywordViewSet,
+    PlannerRunViewSet,
+    PlannerSeedViewSet,
+)
 from api.v1.views.pub import (
+    ChannelViewSet,
     ContentGenerateView,
     ContentPreviewView,
     ContentSetItemView,
@@ -17,6 +36,12 @@ from api.v1.views.pub import (
     TitleGenerateView,
     TitleSuggestionsView,
 )
+from api.v1.views.translations import (
+    ProductTranslationView,
+    TranslationTaskCreateView,
+    TranslationTaskDetailView,
+    TranslationTaskViewSet,
+)
 
 __all__ = [
     "AttributeViewSet",
@@ -25,6 +50,25 @@ __all__ = [
     "ProductTypeViewSet",
     "ProductViewSet",
     "VariantViewSet",
+    "ChannelViewSet",
+    "ProductImportViewSet",
+    "CategoryBatchViewSet",
+    "ImportUploadView",
+    "ImportPreviewView",
+    "ImportAssignCategoryView",
+    "ImportMapAttributesView",
+    "TranslationTaskViewSet",
+    "TranslationTaskCreateView",
+    "TranslationTaskDetailView",
+    "ProductTranslationView",
+    "PlannerRunViewSet",
+    "PlannerRunKeywordViewSet",
+    "PlannerSeedViewSet",
+    "KeywordViewSet",
+    "MetricViewSet",
+    "KeywordPlannerRunCreateView",
+    "KeywordPlannerRunDetailView",
+    "KeywordPlannerRunApproveView",
     "TemplateViewSet",
     "TemplatePartViewSet",
     "ContentSetViewSet",

@@ -18,6 +18,12 @@ from pub.models import (
 )
 
 
+class ChannelSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Channel
+        fields = ["id", "code", "name", "is_active", "priority"]
+
+
 class TemplateSerializer(serializers.ModelSerializer):
     product_type_id = serializers.PrimaryKeyRelatedField(
         source="product_type",

@@ -7,6 +7,7 @@ from api.v1.serializers import (
     ContentPreviewRequestSerializer,
     ContentSetItemSerializer,
     ContentSetSerializer,
+    ChannelSerializer,
     ExportJobCreateSerializer,
     ExportJobSerializer,
     ExportProfileSerializer,
@@ -49,8 +50,14 @@ class TemplateViewSet(IntegrityErrorTo409Mixin, viewsets.ModelViewSet):
 
 
 class TemplatePartViewSet(IntegrityErrorTo409Mixin, viewsets.ModelViewSet):
-    queryset = TemplatePart.objects.select_related("template", "attribute").order_by("template_id", "position", "id")
     serializer_class = TemplatePartSerializer
+
+    def get_queryset(self):
+        queryset = TemplatePart.objects.select_related("template", "attribute").order_by("template_id", "position", "id")
+        template_id = self.request.query_params.get("template_id")
+        if template_id:
+            queryset = queryset.filter(template_id=template_id)
+        return queryset
 
 
 class GenerationRunViewSet(viewsets.ReadOnlyModelViewSet):
@@ -82,6 +89,11 @@ class ExportProfileViewSet(IntegrityErrorTo409Mixin, viewsets.ModelViewSet):
 class ExportJobViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = ExportJob.objects.all().order_by("-id")
     serializer_class = ExportJobSerializer
+
+
+class ChannelViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = Channel.objects.filter(is_active=True).order_by("code")
+    serializer_class = ChannelSerializer
 
 
 class TitleGenerateView(APIView):

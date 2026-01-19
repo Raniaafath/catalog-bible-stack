@@ -6,7 +6,22 @@ from api.v1.serializers.catalog import (
     VariantSerializer,
 )
 from api.v1.serializers.content import LocaleSerializer
+from api.v1.serializers.importer import (
+    AttributeMappingSerializer,
+    CategoryBatchSerializer,
+    ImportRowSerializer,
+    ProductImportSerializer,
+)
+from api.v1.serializers.keywords import (
+    KeywordSerializer,
+    MetricSerializer,
+    PlannerRunCreateSerializer,
+    PlannerRunKeywordSerializer,
+    PlannerRunSerializer,
+    PlannerSeedSerializer,
+)
 from api.v1.serializers.pub import (
+    ChannelSerializer,
     ContentGenerateRequestSerializer,
     ContentPreviewRequestSerializer,
     ContentSetItemSerializer,
@@ -24,13 +39,32 @@ from api.v1.serializers.pub import (
     TitleGenerateRequestSerializer,
     TitleSuggestionsQuerySerializer,
 )
+from api.v1.serializers.translations import (
+    ProductAttributeValueI18nSerializer,
+    ProductI18nSerializer,
+    TranslationTaskSerializer,
+)
 
 __all__ = [
     "AttributeSerializer",
     "AttributeValueSerializer",
+    "AttributeMappingSerializer",
+    "CategoryBatchSerializer",
+    "ChannelSerializer",
+    "ImportRowSerializer",
+    "KeywordSerializer",
     "LocaleSerializer",
+    "MetricSerializer",
     "ProductSerializer",
+    "ProductAttributeValueI18nSerializer",
+    "ProductI18nSerializer",
+    "ProductImportSerializer",
     "ProductTypeSerializer",
+    "PlannerRunCreateSerializer",
+    "PlannerRunKeywordSerializer",
+    "PlannerRunSerializer",
+    "PlannerSeedSerializer",
+    "TranslationTaskSerializer",
     "VariantSerializer",
     "TemplateSerializer",
     "TemplatePartSerializer",

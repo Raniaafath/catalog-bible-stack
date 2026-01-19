@@ -1,5 +1,6 @@
 """Models for product import workflow."""
 from django.db import models
+from django.db.models import Q
 
 from catalog.models import Attribute
 
@@ -125,3 +126,55 @@ class AttributeMapping(models.Model):
 
     def __str__(self) -> str:
         return f"{self.source_attr_name} ({self.strategy})"
+
+
+class ImportColumnRule(models.Model):
+    class Role(models.TextChoices):
+        PRODUCT_KEY = "PRODUCT_KEY", "Product key (parent)"
+        VARIANT_KEY = "VARIANT_KEY", "Variant key (SKU)"
+        CATEGORY = "CATEGORY", "Category"
+        BRAND = "BRAND", "Brand"
+        TITLE = "TITLE", "Title"
+        DESCRIPTION = "DESCRIPTION", "Description"
+        ATTRIBUTE = "ATTRIBUTE", "Attribute"
+        IGNORE = "IGNORE", "Ignore"
+
+    product_import = models.ForeignKey(
+        ProductImport,
+        on_delete=models.CASCADE,
+        related_name="column_rules",
+    )
+    column_name = models.CharField(max_length=255)
+    position = models.PositiveIntegerField(default=0)
+    role = models.CharField(max_length=32, choices=Role.choices, default=Role.ATTRIBUTE)
+    target_attribute_code = models.CharField(max_length=255, blank=True, default="")
+    create_attribute_name = models.CharField(max_length=255, blank=True, default="")
+    attribute_type = models.CharField(max_length=32, blank=True, default="")
+    unit = models.CharField(max_length=32, blank=True, default="")
+    required = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["product_import", "column_name"],
+                name="uniq_import_column_rule_per_column",
+            ),
+            models.CheckConstraint(
+                condition=Q(role="ATTRIBUTE")
+                | (
+                    Q(target_attribute_code="")
+                    & Q(create_attribute_name="")
+                    & Q(attribute_type="")
+                    & Q(unit="")
+                ),
+                name="chk_non_attribute_fields_empty",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["product_import", "role"], name="idx_import_column_role"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.product_import_id}:{self.column_name} -> {self.role}"
