@@ -1,0 +1,254 @@
+@import '@fontsource/space-grotesk/400.css';
+@import '@fontsource/space-grotesk/500.css';
+@import '@fontsource/space-grotesk/600.css';
+@import '@fontsource/space-grotesk/700.css';
+@import '@fontsource/inter/400.css';
+@import '@fontsource/inter/500.css';
+@import '@fontsource/inter/600.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Warm neutral palette */
+    --background: 40 20% 98%;
+    --foreground: 220 20% 10%;
+
+    --card: 40 15% 100%;
+    --card-foreground: 220 20% 10%;
+
+    --popover: 40 15% 100%;
+    --popover-foreground: 220 20% 10%;
+
+    /* Warm coral accent */
+    --primary: 12 76% 52%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 40 10% 94%;
+    --secondary-foreground: 220 20% 20%;
+
+    --muted: 40 10% 92%;
+    --muted-foreground: 220 10% 45%;
+
+    --accent: 40 15% 90%;
+    --accent-foreground: 220 20% 15%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 40 15% 88%;
+    --input: 40 15% 88%;
+    --ring: 12 76% 52%;
+
+    --radius: 0.5rem;
+
+    /* Status colors */
+    --status-success: 142 71% 45%;
+    --status-success-bg: 142 76% 94%;
+    --status-success-foreground: 142 76% 20%;
+
+    --status-warning: 38 92% 50%;
+    --status-warning-bg: 38 92% 94%;
+    --status-warning-foreground: 38 92% 25%;
+
+    --status-error: 0 84% 60%;
+    --status-error-bg: 0 84% 95%;
+    --status-error-foreground: 0 84% 30%;
+
+    --status-processing: 217 91% 60%;
+    --status-processing-bg: 217 91% 95%;
+    --status-processing-foreground: 217 91% 30%;
+
+    --status-pending: 220 10% 55%;
+    --status-pending-bg: 220 10% 94%;
+    --status-pending-foreground: 220 10% 30%;
+
+    --status-completed: 142 71% 45%;
+    --status-completed-bg: 142 76% 94%;
+    --status-completed-foreground: 142 76% 20%;
+
+    /* Typography */
+    --font-display: 'Space Grotesk', system-ui, sans-serif;
+    --font-body: 'Inter', system-ui, sans-serif;
+
+    /* Sidebar */
+    --sidebar-background: 40 15% 97%;
+    --sidebar-foreground: 220 20% 25%;
+    --sidebar-primary: 12 76% 52%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 40 15% 92%;
+    --sidebar-accent-foreground: 220 20% 15%;
+    --sidebar-border: 40 15% 88%;
+    --sidebar-ring: 12 76% 52%;
+  }
+
+  .dark {
+    --background: 220 20% 8%;
+    --foreground: 40 10% 95%;
+
+    --card: 220 18% 11%;
+    --card-foreground: 40 10% 95%;
+
+    --popover: 220 18% 11%;
+    --popover-foreground: 40 10% 95%;
+
+    --primary: 12 76% 55%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 220 15% 18%;
+    --secondary-foreground: 40 10% 90%;
+
+    --muted: 220 15% 20%;
+    --muted-foreground: 220 10% 60%;
+
+    --accent: 220 15% 22%;
+    --accent-foreground: 40 10% 95%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 220 15% 20%;
+    --input: 220 15% 20%;
+    --ring: 12 76% 55%;
+
+    --status-success-bg: 142 50% 15%;
+    --status-warning-bg: 38 60% 15%;
+    --status-error-bg: 0 60% 15%;
+    --status-processing-bg: 217 60% 15%;
+    --status-pending-bg: 220 15% 18%;
+
+    --sidebar-background: 220 18% 10%;
+    --sidebar-foreground: 40 10% 90%;
+    --sidebar-accent: 220 15% 18%;
+    --sidebar-accent-foreground: 40 10% 95%;
+    --sidebar-border: 220 15% 18%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    font-family: var(--font-body);
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-display);
+    @apply font-semibold tracking-tight;
+  }
+}
+
+@layer components {
+  .page-container {
+    @apply max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6;
+  }
+
+  .page-header {
+    @apply mb-8;
+  }
+
+  .page-title {
+    @apply text-3xl font-bold text-foreground mb-2;
+    font-family: var(--font-display);
+  }
+
+  .page-description {
+    @apply text-muted-foreground;
+  }
+
+  .stat-card {
+    @apply bg-card rounded-lg border border-border p-5 transition-all duration-200 hover:border-primary/30 hover:shadow-sm;
+  }
+
+  .stat-value {
+    @apply text-3xl font-bold tracking-tight;
+    font-family: var(--font-display);
+  }
+
+  .stat-label {
+    @apply text-sm text-muted-foreground mt-1;
+  }
+
+  .data-table {
+    @apply w-full text-sm;
+  }
+
+  .data-table th {
+    @apply text-left font-medium text-muted-foreground px-4 py-3 bg-muted/50 first:rounded-tl-lg last:rounded-tr-lg sticky top-0;
+    font-family: var(--font-display);
+  }
+
+  .data-table td {
+    @apply px-4 py-3 border-b border-border;
+  }
+
+  .data-table tbody tr:hover {
+    @apply bg-muted/30;
+  }
+
+  .empty-state {
+    @apply flex flex-col items-center justify-center py-16 text-center;
+  }
+
+  .empty-state-icon {
+    @apply w-12 h-12 text-muted-foreground/50 mb-4;
+  }
+
+  .empty-state-title {
+    @apply text-lg font-medium text-foreground mb-1;
+    font-family: var(--font-display);
+  }
+
+  .empty-state-description {
+    @apply text-sm text-muted-foreground;
+  }
+
+  .file-dropzone {
+    @apply border-2 border-dashed border-border rounded-lg p-8 text-center cursor-pointer transition-all duration-200;
+    @apply hover:border-primary/50 hover:bg-primary/5;
+  }
+
+  .file-dropzone.active {
+    @apply border-primary bg-primary/10;
+  }
+}
+
+@layer utilities {
+  .stagger-fade-in > * {
+    opacity: 0;
+    animation: fadeInUp 0.4s ease-out forwards;
+  }
+
+  .stagger-fade-in > *:nth-child(1) { animation-delay: 0ms; }
+  .stagger-fade-in > *:nth-child(2) { animation-delay: 50ms; }
+  .stagger-fade-in > *:nth-child(3) { animation-delay: 100ms; }
+  .stagger-fade-in > *:nth-child(4) { animation-delay: 150ms; }
+  .stagger-fade-in > *:nth-child(5) { animation-delay: 200ms; }
+  .stagger-fade-in > *:nth-child(6) { animation-delay: 250ms; }
+  .stagger-fade-in > *:nth-child(7) { animation-delay: 300ms; }
+  .stagger-fade-in > *:nth-child(8) { animation-delay: 350ms; }
+
+  @keyframes fadeInUp {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .animate-pulse-slow {
+    animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+}
