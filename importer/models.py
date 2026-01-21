@@ -10,6 +10,8 @@ class ProductImport(models.Model):
         UPLOADED = "uploaded", "Uploaded"
         PARSED = "parsed", "Parsed"
         MAPPED = "mapped", "Mapped"
+        PROCESSING = "processing", "Processing"
+        COMPLETED = "completed", "Completed"
         COMMITTED = "committed", "Committed"
         FAILED = "failed", "Failed"
 
@@ -23,6 +25,16 @@ class ProductImport(models.Model):
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.UPLOADED)
     row_count = models.IntegerField(default=0)
     error_count = models.IntegerField(default=0)
+    
+    # Import behavior settings
+    group_by_product_key = models.BooleanField(
+        default=True,
+        help_text=(
+            "If True, variants with the same PRODUCT_KEY will be grouped into one Product. "
+            "If False, each variant will get its own Product (standalone mode) for manual grouping later. "
+            "PRODUCT_KEY column will still be parsed but won't be used for grouping."
+        )
+    )
 
     def __str__(self) -> str:
         return f"Import {self.id} [{self.status}]"
@@ -52,6 +64,8 @@ class ImportRow(models.Model):
     normalized = models.JSONField(null=True, blank=True)
     errors = models.JSONField(null=True, blank=True)
     is_valid = models.BooleanField(default=True)
+    parent_key = models.CharField(max_length=255, blank=True, default='', help_text='Key to group variants under the same parent product')
+    is_parent = models.BooleanField(default=False, help_text='Whether this row represents a parent product')
 
     class Meta:
         constraints = [
@@ -63,6 +77,7 @@ class ImportRow(models.Model):
         indexes = [
             models.Index(fields=["product_import", "row_number"], name="idx_import_row_number"),
             models.Index(fields=["product_import", "is_valid"], name="idx_import_row_valid"),
+            models.Index(fields=["product_import", "parent_key"], name="idx_import_row_parent_key"),
         ]
 
     def __str__(self) -> str:
@@ -152,6 +167,9 @@ class ImportColumnRule(models.Model):
     attribute_type = models.CharField(max_length=32, blank=True, default="")
     unit = models.CharField(max_length=32, blank=True, default="")
     required = models.BooleanField(default=False)
+    is_variation_axis = models.BooleanField(default=False, help_text="Mark this attribute as a variation axis for generating variants")
+    axis_priority = models.IntegerField(default=0, help_text="Priority/position of this variation axis (0-4 for up to 5 axes)")
+    variant_level = models.BooleanField(default=False, help_text="Whether this attribute belongs to variant level (not product level)")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

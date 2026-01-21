@@ -16,6 +16,7 @@ class ProductImportSerializer(serializers.ModelSerializer):
             "status",
             "row_count",
             "error_count",
+            "group_by_product_key",
         ]
 
 

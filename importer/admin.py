@@ -102,13 +102,26 @@ class ImportRowInline(admin.TabularInline):
 
 @admin.register(ProductImport)
 class ProductImportAdmin(admin.ModelAdmin):
-    list_display = ("id", "status", "original_filename", "file_type", "row_count", "error_count", "created_by", "created_at")
-    list_filter = ("status", "file_type", "created_at")
+    list_display = ("id", "status", "original_filename", "file_type", "group_by_product_key", "row_count", "error_count", "created_by", "created_at")
+    list_filter = ("status", "file_type", "group_by_product_key", "created_at")
     search_fields = ("id", "original_filename", "created_by")
     readonly_fields = ("created_at",)
     date_hierarchy = "created_at"
     actions = [parse_imports, map_imports, export_imports_xlsx, export_imports_csv, init_mapping]
     inlines = [ImportColumnRuleInline, ImportRowInline]
+    fieldsets = (
+        ("File Information", {
+            "fields": ("source_file", "original_filename", "file_type", "status")
+        }),
+        ("Import Settings", {
+            "fields": ("group_by_product_key",),
+            "description": "Control whether variants with the same PRODUCT_KEY should be grouped into one Product.",
+        }),
+        ("Statistics", {
+            "fields": ("row_count", "error_count", "created_by", "created_at"),
+            "classes": ("collapse",)
+        }),
+    )
 
 
 @admin.register(ImportColumnMap)
