@@ -1,4 +1,5 @@
 from django.db import models
+from django.utils import timezone
 
 from catalog.models import Attribute, AttributeValue, Product, ProductType, ProductAttributeValue
 from pub.models import Channel
@@ -268,8 +269,22 @@ class TranslationTask(models.Model):
     locale = models.CharField(max_length=15)
     scope = models.CharField(max_length=30)  # attribute, attribute_value, product_type
     target_ids = models.JSONField(default=list)
+    channel = models.ForeignKey(
+        Channel,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="translation_tasks",
+        help_text="Optional channel filter for translation",
+    )
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    model = models.CharField(max_length=50, default="gpt-4o-mini")
     error = models.TextField(blank=True)
+    # Progress tracking fields
+    items_total = models.IntegerField(default=0, help_text="Total items to translate")
+    items_completed = models.IntegerField(default=0, help_text="Items translated so far")
+    started_at = models.DateTimeField(null=True, blank=True, help_text="When processing started")
+    finished_at = models.DateTimeField(null=True, blank=True, help_text="When processing finished")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -280,6 +295,21 @@ class TranslationTask(models.Model):
 
     def __str__(self) -> str:
         return f"{self.scope}@{self.locale} [{self.status}]"
+    
+    @property
+    def progress_percent(self) -> int:
+        """Calculate progress percentage (0-100)"""
+        if self.items_total == 0:
+            return 0 if self.status == self.Status.PENDING else 100
+        return min(100, int((self.items_completed / self.items_total) * 100))
+    
+    @property
+    def duration_seconds(self) -> int | None:
+        """Calculate duration in seconds"""
+        if not self.started_at:
+            return None
+        end_time = self.finished_at or timezone.now()
+        return int((end_time - self.started_at).total_seconds())
 
 
 class ProductMedia(models.Model):

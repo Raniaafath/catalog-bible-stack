@@ -1,73 +1,171 @@
+import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { useNavigate, Link } from 'react-router-dom';
-import { Plus, Languages, Globe } from 'lucide-react';
-import { formatDistanceToNow } from 'date-fns';
+import { Plus, RefreshCw, Clock, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
 import { PageHeader } from '@/components/PageHeader';
-import { DataTable, Column } from '@/components/DataTable';
-import { StatusBadge } from '@/components/StatusBadge';
 import { Button } from '@/components/ui/button';
-import { getTranslationTasks, TranslationTask } from '@/lib/api';
+import { DataTable } from '@/components/DataTable';
+import { Progress } from '@/components/ui/progress';
+import { getTranslationTasks } from '@/lib/api';
+
+const statusColors: Record<string, string> = {
+  pending: 'bg-yellow-100 text-yellow-800',
+  in_progress: 'bg-blue-100 text-blue-800',
+  done: 'bg-green-100 text-green-800',
+  failed: 'bg-red-100 text-red-800',
+};
+
+const statusIcons: Record<string, React.ReactNode> = {
+  pending: <Clock className="w-3 h-3 mr-1" />,
+  in_progress: <Loader2 className="w-3 h-3 mr-1 animate-spin" />,
+  done: <CheckCircle className="w-3 h-3 mr-1" />,
+  failed: <AlertCircle className="w-3 h-3 mr-1" />,
+};
+
+const scopeLabels: Record<string, string> = {
+  product_attribute_value: 'Product Attributes',
+  attribute: 'Attribute Names',
+  attribute_value: 'Attribute Values',
+  product_type: 'Product Types',
+};
+
+const scopeDescriptions: Record<string, string> = {
+  product_attribute_value: 'Translates product attribute values (color names, sizes, materials, etc.)',
+  attribute: 'Translates attribute names/labels',
+  attribute_value: 'Translates enum attribute value options',
+  product_type: 'Translates product type names and categories',
+};
+
+function formatDuration(seconds: number | null): string {
+  if (seconds === null || seconds === undefined) return '-';
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  if (minutes < 60) return `${minutes}m ${remainingSeconds}s`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return `${hours}h ${remainingMinutes}m`;
+}
 
 export default function TranslationsList() {
   const navigate = useNavigate();
 
-  const { data, isLoading, error } = useQuery({
+  const { data: tasks, isLoading, refetch } = useQuery({
     queryKey: ['translation-tasks'],
-    queryFn: () => getTranslationTasks({ page: 1, page_size: 50 }),
+    queryFn: () => getTranslationTasks(),
+    refetchInterval: 5000, // Refresh every 5 seconds
   });
 
-  const columns: Column<TranslationTask>[] = [
+  const modelBadgeColors: Record<string, string> = {
+    'gpt-4o-mini': 'bg-green-100 text-green-800',
+    'gpt-4o': 'bg-blue-100 text-blue-800',
+    'gpt-4-turbo': 'bg-purple-100 text-purple-800',
+  };
+
+  const columns = [
     {
-      key: 'locale',
-      header: 'Locale',
-      render: (item) => (
-        <div className="flex items-center gap-3">
-          <div className="p-2 rounded-lg bg-muted">
-            <Globe className="w-4 h-4 text-muted-foreground" />
+      key: 'id',
+      header: 'ID',
+      render: (task: any) => (
+        <span className="font-mono font-medium">#{task.id}</span>
+      ),
+    },
+    {
+      key: 'scope',
+      header: 'Scope',
+      render: (task: any) => (
+        <div>
+          <div className="font-medium">{scopeLabels[task.scope] || task.scope}</div>
+          <div className="text-xs text-muted-foreground truncate max-w-[200px]" title={scopeDescriptions[task.scope]}>
+            {scopeDescriptions[task.scope]}
           </div>
-          <span className="font-medium uppercase">{item.locale}</span>
         </div>
       ),
     },
     {
-      key: 'status',
-      header: 'Status',
-      render: (item) => <StatusBadge status={item.status} />,
-    },
-    {
-      key: 'product_count',
-      header: 'Products',
-      render: (item) => (
-        <span className="font-mono text-sm">{item.product_count.toLocaleString()}</span>
+      key: 'locale',
+      header: 'Language',
+      render: (task: any) => (
+        <span className="font-mono text-sm bg-gray-100 px-2 py-0.5 rounded">{task.locale}</span>
       ),
     },
     {
-      key: 'translated_count',
-      header: 'Translated',
-      render: (item) => {
-        const pct = item.product_count > 0 
-          ? Math.round((item.translated_count / item.product_count) * 100) 
-          : 0;
+      key: 'progress',
+      header: 'Progress',
+      render: (task: any) => {
+        const percent = task.progress_percent ?? 0;
+        const itemsTotal = task.items_total ?? 0;
+        const itemsCompleted = task.items_completed ?? 0;
+        
         return (
-          <div className="flex items-center gap-2">
-            <div className="w-16 h-2 bg-muted rounded-full overflow-hidden">
-              <div 
-                className="h-full bg-primary rounded-full transition-all"
-                style={{ width: `${pct}%` }}
-              />
+          <div className="min-w-[120px]">
+            <div className="flex items-center justify-between text-xs mb-1">
+              <span>{itemsCompleted} / {itemsTotal || '?'}</span>
+              <span className="font-medium">{percent}%</span>
             </div>
-            <span className="text-sm text-muted-foreground">{pct}%</span>
+            <Progress value={percent} className="h-2" />
           </div>
         );
       },
     },
     {
+      key: 'model',
+      header: 'Model',
+      render: (task: any) => (
+        <span
+          className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
+            modelBadgeColors[task.model] || 'bg-gray-100 text-gray-800'
+          }`}
+        >
+          {task.model || 'gpt-4o-mini'}
+        </span>
+      ),
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      render: (task: any) => (
+        <span
+          className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+            statusColors[task.status] || 'bg-gray-100 text-gray-800'
+          }`}
+        >
+          {statusIcons[task.status]}
+          {task.status.replace('_', ' ')}
+        </span>
+      ),
+    },
+    {
+      key: 'duration',
+      header: 'Duration',
+      render: (task: any) => (
+        <span className="text-sm text-muted-foreground">
+          {formatDuration(task.duration_seconds)}
+        </span>
+      ),
+    },
+    {
       key: 'created_at',
       header: 'Created',
-      render: (item) => (
-        <span className="text-muted-foreground">
-          {formatDistanceToNow(new Date(item.created_at), { addSuffix: true })}
-        </span>
+      render: (task: any) => (
+        <div className="text-sm">
+          <div>{new Date(task.created_at).toLocaleDateString()}</div>
+          <div className="text-xs text-muted-foreground">
+            {new Date(task.created_at).toLocaleTimeString()}
+          </div>
+        </div>
+      ),
+    },
+    {
+      key: 'actions',
+      header: 'Actions',
+      render: (task: any) => (
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => navigate(`/translations/${task.id}`)}
+        >
+          View
+        </Button>
       ),
     },
   ];
@@ -75,27 +173,33 @@ export default function TranslationsList() {
   return (
     <div className="page-container">
       <PageHeader
-        title="Translations"
-        description="Manage product translations across locales"
-        breadcrumbs={[{ label: 'Dashboard', href: '/' }, { label: 'Translations' }]}
+        title="Translation Tasks"
+        description="Manage AI-powered translations for attributes, values, and product types."
+        breadcrumbs={[
+          { label: 'Dashboard', href: '/' },
+          { label: 'Translations' },
+        ]}
         actions={
-          <Button onClick={() => navigate('/translations/new')}>
-            <Plus className="w-4 h-4 mr-2" />
-            New Task
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => refetch()}>
+              <RefreshCw className="w-4 h-4 mr-2" />
+              Refresh
+            </Button>
+            <Button onClick={() => navigate('/translations/new')}>
+              <Plus className="w-4 h-4 mr-2" />
+              New Translation
+            </Button>
+          </div>
         }
       />
 
       <DataTable
         columns={columns}
-        data={data?.results || []}
-        keyExtractor={(item) => item.id}
+        data={tasks?.results || []}
+        keyExtractor={(task) => task.id.toString()}
         isLoading={isLoading}
-        error={error as Error}
-        emptyTitle="No translation tasks"
-        emptyDescription="Create a translation task to get started."
-        onRowClick={(item) => navigate(`/translations/${item.id}`)}
-        sortable
+        emptyTitle="No translation tasks found"
+        emptyDescription="Create your first translation to get started."
       />
     </div>
   );

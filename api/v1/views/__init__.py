@@ -1,9 +1,11 @@
-from api.v1.views.catalog import AttributeViewSet, AttributeValueViewSet, ProductTypeViewSet, ProductViewSet, VariantViewSet
+from api.v1.views.catalog import AttributeViewSet, AttributeValueViewSet, ProductTypeViewSet, ProductViewSet, TranslatableAttributesViewSet, VariantViewSet
 from api.v1.views.content import LocaleViewSet
+from api.v1.views.auth import LoginView, LogoutView, MeView, SignupView
 from api.v1.views.importer import (
     CategoryBatchViewSet,
     ImportAssignCategoryView,
     ImportMapAttributesView,
+    ImportProcessView,
     ImportPreviewView,
     ImportUploadView,
     ProductImportViewSet,
@@ -19,7 +21,16 @@ from api.v1.views.keywords import (
     PlannerSeedViewSet,
 )
 from api.v1.views.pub import (
+    ChannelListingAvailableTemplatesView,
+    ChannelListingAxesView,
+    ChannelListingDifferencesView,
+    ChannelListingGenerateTitlesView,
+    ChannelListingMoveVariantsView,
+    ChannelListingRemoveVariantsView,
+    ChannelListingViewSet,
     ChannelViewSet,
+    ChannelPolicySetViewSet,
+    ChannelLocalePolicyViewSet,
     ContentGenerateView,
     ContentPreviewView,
     ContentSetItemView,
@@ -38,28 +49,47 @@ from api.v1.views.pub import (
 )
 from api.v1.views.translations import (
     ProductTranslationView,
+    TranslationStatusView,
     TranslationTaskCreateView,
     TranslationTaskDetailView,
+    UpdateTranslationView,
     TranslationTaskViewSet,
 )
 
 __all__ = [
     "AttributeViewSet",
     "AttributeValueViewSet",
+    "TranslatableAttributesViewSet",
+    "ChannelListingAvailableTemplatesView",
+    "ChannelListingAxesView",
+    "ChannelListingDifferencesView",
+    "ChannelListingGenerateTitlesView",
+    "ChannelListingMoveVariantsView",
+    "ChannelListingRemoveVariantsView",
+    "ChannelListingViewSet",
+    "ChannelViewSet",
+    "ChannelPolicySetViewSet",
+    "ChannelLocalePolicyViewSet",
+    "LoginView",
+    "LogoutView",
+    "MeView",
     "LocaleViewSet",
     "ProductTypeViewSet",
     "ProductViewSet",
+    "SignupView",
     "VariantViewSet",
-    "ChannelViewSet",
     "ProductImportViewSet",
     "CategoryBatchViewSet",
     "ImportUploadView",
     "ImportPreviewView",
     "ImportAssignCategoryView",
     "ImportMapAttributesView",
+    "ImportProcessView",
     "TranslationTaskViewSet",
+    "TranslationStatusView",
     "TranslationTaskCreateView",
     "TranslationTaskDetailView",
+    "UpdateTranslationView",
     "ProductTranslationView",
     "PlannerRunViewSet",
     "PlannerRunKeywordViewSet",

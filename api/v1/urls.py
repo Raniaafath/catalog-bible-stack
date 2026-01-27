@@ -10,8 +10,12 @@ router.register("product-types", views.ProductTypeViewSet, basename="product-typ
 router.register("products", views.ProductViewSet, basename="products")
 router.register("variants", views.VariantViewSet, basename="variants")
 router.register("attributes", views.AttributeViewSet, basename="attributes")
+router.register("attributes-translatable", views.TranslatableAttributesViewSet, basename="attributes-translatable")
 router.register("attribute-values", views.AttributeValueViewSet, basename="attribute-values")
 router.register("channels", views.ChannelViewSet, basename="channels")
+router.register("channel-policy-sets", views.ChannelPolicySetViewSet, basename="channel-policy-sets")
+router.register("channel-locale-policies", views.ChannelLocalePolicyViewSet, basename="channel-locale-policies")
+router.register("channel-listings", views.ChannelListingViewSet, basename="channel-listings")
 router.register("imports", views.ProductImportViewSet, basename="imports")
 router.register("category-batches", views.CategoryBatchViewSet, basename="category-batches")
 router.register("translation-tasks", views.TranslationTaskViewSet, basename="translation-tasks")
@@ -29,12 +33,27 @@ router.register("keywords", views.KeywordViewSet, basename="keywords")
 router.register("metrics", views.MetricViewSet, basename="metrics")
 
 urlpatterns = [
+    path("auth/login/", views.LoginView.as_view(), name="auth-login"),
+    path("auth/signup/", views.SignupView.as_view(), name="auth-signup"),
+    path("auth/logout/", views.LogoutView.as_view(), name="auth-logout"),
+    path("auth/me/", views.MeView.as_view(), name="auth-me"),
     path("imports/upload/", views.ImportUploadView.as_view(), name="import-upload"),
     path("imports/<int:import_id>/preview/", views.ImportPreviewView.as_view(), name="import-preview"),
     path("imports/<int:import_id>/assign-category/", views.ImportAssignCategoryView.as_view(), name="import-assign-category"),
     path("imports/<int:import_id>/map-attributes/", views.ImportMapAttributesView.as_view(), name="import-map-attributes"),
+    path("imports/<int:import_id>/process/", views.ImportProcessView.as_view(), name="import-process"),
     path("translations/create-task/", views.TranslationTaskCreateView.as_view(), name="translation-task-create"),
     path("translations/tasks/<int:task_id>/", views.TranslationTaskDetailView.as_view(), name="translation-task-detail"),
+    path(
+        "translations/status/<str:locale_code>/",
+        views.TranslationStatusView.as_view(),
+        name="translation-status",
+    ),
+    path(
+        "translations/<str:scope>/<int:translation_id>/",
+        views.UpdateTranslationView.as_view(),
+        name="update-translation",
+    ),
     path(
         "translations/<str:locale_code>/products/<int:product_id>/",
         views.ProductTranslationView.as_view(),
@@ -68,5 +87,36 @@ urlpatterns = [
         name="generation-batch-items",
     ),
     path("exports/create/", views.ExportJobCreateView.as_view(), name="export-job-create"),
+    # Channel Listings (Groups) - custom actions
+    path(
+        "channel-listings/<int:listing_id>/move-variants/",
+        views.ChannelListingMoveVariantsView.as_view(),
+        name="channel-listing-move-variants",
+    ),
+    path(
+        "channel-listings/<int:listing_id>/remove-variants/",
+        views.ChannelListingRemoveVariantsView.as_view(),
+        name="channel-listing-remove-variants",
+    ),
+    path(
+        "channel-listings/<int:listing_id>/differences/",
+        views.ChannelListingDifferencesView.as_view(),
+        name="channel-listing-differences",
+    ),
+    path(
+        "channel-listings/<int:listing_id>/axes/",
+        views.ChannelListingAxesView.as_view(),
+        name="channel-listing-axes",
+    ),
+    path(
+        "channel-listings/<int:listing_id>/available-templates/",
+        views.ChannelListingAvailableTemplatesView.as_view(),
+        name="channel-listing-available-templates",
+    ),
+    path(
+        "channel-listings/<int:listing_id>/generate-titles/",
+        views.ChannelListingGenerateTitlesView.as_view(),
+        name="channel-listing-generate-titles",
+    ),
     path("", include(router.urls)),
 ]
