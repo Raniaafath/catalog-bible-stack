@@ -8,4 +8,4 @@ done
 python manage.py migrate --noinput
 python manage.py collectstatic --noinput || true
 
-exec gunicorn core.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 60
+exec gunicorn core.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 60 --log-level debug --capture-output

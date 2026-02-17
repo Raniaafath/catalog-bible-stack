@@ -1,0 +1,18 @@
+parent_id,sku,barcode,mpn,brand,title,description,color,size,material,price
+TSHIRT-001,TSH-BLK-S,3700123456789,MPN-TSH-001-S,StyleCo,T-Shirt Premium Noir Taille S,T-shirt 100% coton bio de haute qualité. Coupe ajustée.,Noir,S,Coton Bio,29.99
+TSHIRT-001,TSH-BLK-M,3700123456790,MPN-TSH-001-M,StyleCo,T-Shirt Premium Noir Taille M,T-shirt 100% coton bio de haute qualité. Coupe ajustée.,Noir,M,Coton Bio,29.99
+TSHIRT-001,TSH-BLK-L,3700123456791,MPN-TSH-001-L,StyleCo,T-Shirt Premium Noir Taille L,T-shirt 100% coton bio de haute qualité. Coupe ajustée.,Noir,L,Coton Bio,29.99
+TSHIRT-001,TSH-WHT-S,3700123456792,MPN-TSH-002-S,StyleCo,T-Shirt Premium Blanc Taille S,T-shirt 100% coton bio de haute qualité. Coupe ajustée.,Blanc,S,Coton Bio,29.99
+TSHIRT-001,TSH-WHT-M,3700123456793,MPN-TSH-002-M,StyleCo,T-Shirt Premium Blanc Taille M,T-shirt 100% coton bio de haute qualité. Coupe ajustée.,Blanc,M,Coton Bio,29.99
+TSHIRT-001,TSH-WHT-L,3700123456794,MPN-TSH-002-L,StyleCo,T-Shirt Premium Blanc Taille L,T-shirt 100% coton bio de haute qualité. Coupe ajustée.,Blanc,L,Coton Bio,29.99
+JEANS-001,JNS-BLU-32,3700123456800,MPN-JNS-001-32,DenimPro,Jean Slim Bleu 32,Jean slim fit en denim stretch. Lavage stone wash.,Bleu,32,Denim Stretch,79.99
+JEANS-001,JNS-BLU-34,3700123456801,MPN-JNS-001-34,DenimPro,Jean Slim Bleu 34,Jean slim fit en denim stretch. Lavage stone wash.,Bleu,34,Denim Stretch,79.99
+JEANS-001,JNS-BLU-36,3700123456802,MPN-JNS-001-36,DenimPro,Jean Slim Bleu 36,Jean slim fit en denim stretch. Lavage stone wash.,Bleu,36,Denim Stretch,79.99
+JEANS-001,JNS-BLK-32,3700123456803,MPN-JNS-002-32,DenimPro,Jean Slim Noir 32,Jean slim fit en denim stretch. Lavage noir intense.,Noir,32,Denim Stretch,79.99
+JEANS-001,JNS-BLK-34,3700123456804,MPN-JNS-002-34,DenimPro,Jean Slim Noir 34,Jean slim fit en denim stretch. Lavage noir intense.,Noir,34,Denim Stretch,79.99
+JACKET-001,JKT-GRN-M,3700123456810,MPN-JKT-001-M,OutdoorGear,Veste Imperméable Verte M,Veste technique imperméable et respirante. Idéale pour la randonnée.,Vert,M,Polyester Recyclé,149.99
+JACKET-001,JKT-GRN-L,3700123456811,MPN-JKT-001-L,OutdoorGear,Veste Imperméable Verte L,Veste technique imperméable et respirante. Idéale pour la randonnée.,Vert,L,Polyester Recyclé,149.99
+JACKET-001,JKT-GRN-XL,3700123456812,MPN-JKT-001-XL,OutdoorGear,Veste Imperméable Verte XL,Veste technique imperméable et respirante. Idéale pour la randonnée.,Vert,XL,Polyester Recyclé,149.99
+SNEAKER-001,SNK-WHT-40,3700123456820,MPN-SNK-001-40,UrbanStep,Sneakers Blanches 40,Sneakers casual en cuir synthétique. Semelle confort.,Blanc,40,Cuir Synthétique,89.99
+SNEAKER-001,SNK-WHT-42,3700123456821,MPN-SNK-001-42,UrbanStep,Sneakers Blanches 42,Sneakers casual en cuir synthétique. Semelle confort.,Blanc,42,Cuir Synthétique,89.99
+SNEAKER-001,SNK-WHT-44,3700123456822,MPN-SNK-001-44,UrbanStep,Sneakers Blanches 44,Sneakers casual en cuir synthétique. Semelle confort.,Blanc,44,Cuir Synthétique,89.99

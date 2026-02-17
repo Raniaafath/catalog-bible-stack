@@ -1,40 +1,61 @@
-import { useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useState, useMemo } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Search, Loader2, CheckCircle2, TrendingUp, BarChart3 } from 'lucide-react';
+import { Search, Loader2, CheckCircle2, TrendingUp, MapPin } from 'lucide-react';
 import { PageHeader } from '@/components/PageHeader';
 import { StatusBadge } from '@/components/StatusBadge';
 import { DataTable, Column } from '@/components/DataTable';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
-import { getPlannerRun, getPlannerKeywords, approvePlannerRun, PlannerKeyword } from '@/lib/api';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Label } from '@/components/ui/label';
+import { getPlannerRun, approvePlannerRun, mapPlannerRunKeywords, PlannerKeyword } from '@/lib/api';
+
+type KeywordSortOrder = 'default' | 'volume_desc' | 'volume_asc';
 
 export default function KeywordsDetail() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const runId = Number(id);
 
   const [selectedKeywords, setSelectedKeywords] = useState<Set<number>>(new Set());
+  const [sortOrder, setSortOrder] = useState<KeywordSortOrder>('default');
 
-  const { data: run, isLoading: runLoading } = useQuery({
+  const { data: detailData, isLoading: runLoading } = useQuery({
     queryKey: ['planner-run', runId],
     queryFn: () => getPlannerRun(runId),
     enabled: !!runId,
-    refetchInterval: (data) =>
-      data?.state.data?.status === 'running' ? 5000 : false,
+    refetchInterval: (query) =>
+      (query?.state?.data as { run?: { status?: string } })?.run?.status === 'running' ? 5000 : false,
   });
 
-  const { data: keywords, isLoading: keywordsLoading } = useQuery({
-    queryKey: ['planner-keywords', runId],
-    queryFn: () => getPlannerKeywords(runId),
-    enabled: !!runId && run?.status !== 'running' && run?.status !== 'pending',
-  });
+  const run = (detailData as { run?: { status?: string; locale_code?: string; locale?: string; keyword_count?: number; product_type_id?: number } })?.run;
+  const keywordsList = (detailData as { keywords?: unknown[] })?.keywords ?? [];
+  const keywordsLoading = false;
+
+  const displayedKeywords = useMemo(() => {
+    const list = [...(keywordsList as PlannerKeyword[])];
+    if (sortOrder === 'default') return list;
+    const vol = (item: PlannerKeyword) => item.search_volume ?? item.avg_searches ?? 0;
+    if (sortOrder === 'volume_desc') return list.sort((a, b) => vol(b) - vol(a));
+    return list.sort((a, b) => vol(a) - vol(b));
+  }, [keywordsList, sortOrder]);
 
   const approveMutation = useMutation({
     mutationFn: (ids: number[]) => approvePlannerRun(runId, ids),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['planner-run', runId] });
+    },
+  });
+
+  const mapMutation = useMutation({
+    mutationFn: () => mapPlannerRunKeywords(runId),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['planner-run', runId] });
+      queryClient.invalidateQueries({ queryKey: ['planner-run-mappings', runId] });
+      if (data.mapped > 0) navigate(`/keywords/${runId}/mappings`);
     },
   });
 
@@ -49,8 +70,8 @@ export default function KeywordsDetail() {
   };
 
   const selectAll = () => {
-    if (keywords?.results) {
-      setSelectedKeywords(new Set(keywords.results.map((k) => k.id)));
+    if (displayedKeywords.length > 0) {
+      setSelectedKeywords(new Set(displayedKeywords.map((k) => k.id)));
     }
   };
 
@@ -58,7 +79,7 @@ export default function KeywordsDetail() {
     approveMutation.mutate(Array.from(selectedKeywords));
   };
 
-  const isLoading = runLoading || keywordsLoading;
+  const isLoading = runLoading;
 
   if (isLoading && !run) {
     return (
@@ -93,10 +114,10 @@ export default function KeywordsDetail() {
     {
       key: 'search_volume',
       header: 'Search Volume',
-      render: (item) => (
+        render: (item) => (
         <div className="flex items-center gap-2">
           <TrendingUp className="w-4 h-4 text-muted-foreground" />
-          <span className="font-mono">{item.search_volume.toLocaleString()}</span>
+          <span className="font-mono">{(item.search_volume ?? 0).toLocaleString()}</span>
         </div>
       ),
     },
@@ -133,23 +154,42 @@ export default function KeywordsDetail() {
     <div className="page-container">
       <PageHeader
         title={`Keywords: ${run?.product_type || 'Run'}`}
-        description={`Locale: ${run?.locale.toUpperCase()} • ${run?.keyword_count || 0} keywords`}
+        description={`Locale: ${(run?.locale_code ?? run?.locale ?? '').toUpperCase()} • ${run?.keyword_count ?? 0} keywords`}
         breadcrumbs={[
           { label: 'Dashboard', href: '/' },
           { label: 'Keywords', href: '/keywords' },
-          { label: run?.product_type || `Run #${id}` },
+          { label: run?.product_type_id ? `Run #${id}` : `Run #${id}` },
         ]}
         actions={
-          run?.status === 'completed' && selectedKeywords.size > 0 && (
-            <Button onClick={handleApprove} disabled={approveMutation.isPending}>
-              {approveMutation.isPending ? (
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              ) : (
-                <CheckCircle2 className="w-4 h-4 mr-2" />
-              )}
-              Approve {selectedKeywords.size} Keywords
+          <div className="flex items-center gap-2">
+            {keywordsList.length > 0 && (
+              <Button
+                variant="outline"
+                onClick={() => mapMutation.mutate()}
+                disabled={mapMutation.isPending}
+              >
+                {mapMutation.isPending && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                <MapPin className="w-4 h-4 mr-2" />
+                Map keywords
+              </Button>
+            )}
+            <Button
+              variant="outline"
+              onClick={() => navigate(`/keywords/${runId}/mappings`)}
+            >
+              View mappings
             </Button>
-          )
+            {(run?.status === 'success' || run?.status === 'completed') && selectedKeywords.size > 0 && (
+              <Button onClick={handleApprove} disabled={approveMutation.isPending}>
+                {approveMutation.isPending ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <CheckCircle2 className="w-4 h-4 mr-2" />
+                )}
+                Approve {selectedKeywords.size} Keywords
+              </Button>
+            )}
+          </div>
         }
       />
 
@@ -170,7 +210,7 @@ export default function KeywordsDetail() {
           <CardContent className="pt-4">
             <p className="text-sm text-muted-foreground">Keywords Found</p>
             <p className="text-2xl font-bold font-display">
-              {run?.keyword_count.toLocaleString() ?? 0}
+              {(run?.keyword_count ?? 0).toLocaleString()}
             </p>
           </CardContent>
         </Card>
@@ -196,16 +236,29 @@ export default function KeywordsDetail() {
         </Card>
       )}
 
-      {keywords && keywords.results.length > 0 && (
+      {keywordsList.length > 0 && (
         <>
-          <div className="flex justify-end mb-4">
+          <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
+            <div className="flex items-center gap-2">
+              <Label htmlFor="keyword-sort" className="text-sm whitespace-nowrap">Order by</Label>
+              <Select value={sortOrder} onValueChange={(v) => setSortOrder(v as KeywordSortOrder)}>
+                <SelectTrigger id="keyword-sort" className="w-[220px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="default">Default</SelectItem>
+                  <SelectItem value="volume_desc">Searches/month (high first)</SelectItem>
+                  <SelectItem value="volume_asc">Searches/month (low first)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
             <Button variant="outline" size="sm" onClick={selectAll}>
               Select All
             </Button>
           </div>
           <DataTable
             columns={columns}
-            data={keywords.results}
+            data={displayedKeywords}
             keyExtractor={(item) => item.id}
             isLoading={keywordsLoading}
             emptyTitle="No keywords found"

@@ -2,13 +2,18 @@
 Translation processor service.
 
 Provides reusable translation logic that can be called from both
-management commands and API views.
+management commands and API views. Translations are produced for
+multi-language catalogs using terminology most commonly used in the
+target country/region for the relevant product type and field (e.g.
+search-friendly, local e-commerce usage), not generic dictionary
+equivalents.
 """
 
 import json
 import logging
 import os
-from typing import List, Optional, Tuple
+from collections import defaultdict
+from typing import Any, Dict, List, Optional, Tuple
 
 from django.db import transaction
 from django.utils import timezone
@@ -24,6 +29,43 @@ from content.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Locale code -> (country/region name, language name) for translation instructions.
+# Ensures we ask for "most common in that country" terminology. Add more as needed.
+LOCALE_COUNTRY_HINTS: Dict[str, Tuple[str, str]] = {
+    "de": ("Germany", "German"),
+    "de-DE": ("Germany", "German"),
+    "de-AT": ("Austria", "German"),
+    "de-CH": ("Switzerland", "German"),
+    "en": ("international English", "English"),
+    "en-GB": ("United Kingdom", "British English"),
+    "en-US": ("United States", "American English"),
+    "fr": ("France", "French"),
+    "fr-FR": ("France", "French"),
+    "fr-BE": ("Belgium", "French"),
+    "fr-CH": ("Switzerland", "French"),
+    "es": ("Spain", "Spanish"),
+    "es-ES": ("Spain", "Spanish"),
+    "es-MX": ("Mexico", "Spanish"),
+    "it": ("Italy", "Italian"),
+    "it-IT": ("Italy", "Italian"),
+    "nl": ("Netherlands", "Dutch"),
+    "nl-NL": ("Netherlands", "Dutch"),
+    "nl-BE": ("Belgium", "Dutch"),
+    "pl": ("Poland", "Polish"),
+    "pt": ("Portugal", "Portuguese"),
+    "pt-BR": ("Brazil", "Brazilian Portuguese"),
+}
+
+
+def _get_locale_country_instruction(target_locale_code: str) -> str:
+    """Return a short instruction for the target country/region (for prompts)."""
+    code = (target_locale_code or "").strip()
+    hint = LOCALE_COUNTRY_HINTS.get(code) or LOCALE_COUNTRY_HINTS.get(code.split("-")[0])
+    if hint:
+        country, language = hint
+        return f"for {country} ({language}, {code}). Use the terminology most commonly used by shoppers and search in that country for this product category/field—not generic dictionary translations."
+    return f"for the target locale {code}. Use the terminology most commonly used by shoppers and search in that country/region for this product category/field—not generic dictionary translations."
 
 
 def process_translation_task(task_id: int) -> bool:
@@ -72,51 +114,97 @@ def _process_task(task: TranslationTask, target_locale: Locale) -> bool:
             items = _fetch_attributes(task.target_ids)
             task.items_total = len(items)
             task.save(update_fields=["items_total", "updated_at"])
-            
-            translations, warning = _translate_batch(items, target_locale.code, task)
+
+            translations, warning = _translate_batch(
+                items, target_locale.code, task, context_extra={"scope": "attribute"}
+            )
             _upsert_attribute_i18n(translations, target_locale)
             task.items_completed = len(translations)
-            
+
         elif task.scope == "attribute_value":
-            items = _fetch_attribute_values(task.target_ids)
-            task.items_total = len(items)
+            rich_items = _fetch_attribute_values(task.target_ids)
+            task.items_total = len(rich_items)
             task.save(update_fields=["items_total", "updated_at"])
-            
-            translations, warning = _translate_batch(items, target_locale.code, task)
-            _upsert_attribute_value_i18n(translations, target_locale)
-            task.items_completed = len(translations)
-            
+
+            all_translations: List[Tuple[int, str]] = []
+            by_attr: Dict[str, List[Tuple[int, str]]] = defaultdict(list)
+            for av_id, label, attr_code in rich_items:
+                by_attr[attr_code].append((av_id, label))
+
+            for attr_code, group in by_attr.items():
+                tr, w = _translate_batch(
+                    group,
+                    target_locale.code,
+                    task,
+                    context_extra={"scope": "attribute_value", "attribute_code": attr_code},
+                )
+                all_translations.extend(tr)
+                if w and not warning:
+                    warning = w
+                elif w and warning and w != warning:
+                    warning = f"{warning} | {w}"
+            _upsert_attribute_value_i18n(all_translations, target_locale)
+            task.items_completed = len(all_translations)
+
         elif task.scope == "product_type":
             items = _fetch_product_types(task.target_ids)
             task.items_total = len(items)
             task.save(update_fields=["items_total", "updated_at"])
-            
+
             label_items = [(rid, label) for rid, label, _mc in items]
             mc_items = [(rid, mc) for rid, _label, mc in items]
-            translations, warning = _translate_batch(label_items, target_locale.code, task)
-            mc_translations, mc_warning = _translate_batch(mc_items, target_locale.code, task)
-            
+            translations, warning = _translate_batch(
+                label_items, target_locale.code, task, context_extra={"scope": "product_type"}
+            )
+            mc_translations, mc_warning = _translate_batch(
+                mc_items, target_locale.code, task, context_extra={"scope": "product_type"}
+            )
             warning = mc_warning if mc_warning and not warning else warning
             if mc_warning and warning and mc_warning != warning:
                 warning = f"{warning} | {mc_warning}"
-            
+
             _upsert_product_type_i18n(translations, mc_translations, target_locale)
             task.items_completed = len(translations)
-            
+
         elif task.scope == "product_attribute_value":
-            items = _fetch_product_attribute_values(task.target_ids)
-            task.items_total = len(items)
+            rich_items = _fetch_product_attribute_values(task.target_ids)
+            task.items_total = len(rich_items)
             task.save(update_fields=["items_total", "updated_at"])
-            
-            translations, warning = _translate_batch(items, target_locale.code, task)
-            _upsert_product_attribute_value_i18n(translations, target_locale)
-            task.items_completed = len(translations)
+
+            by_context: Dict[Tuple[str, str], List[Tuple[int, str]]] = defaultdict(list)
+            for pav_id, text, attr_code, pt_label in rich_items:
+                by_context[(attr_code, pt_label)].append((pav_id, text))
+
+            all_translations = []
+            for (attr_code, pt_label), group in by_context.items():
+                tr, w = _translate_batch(
+                    group,
+                    target_locale.code,
+                    task,
+                    context_extra={
+                        "scope": "product_attribute_value",
+                        "attribute_code": attr_code,
+                        "product_type_label": pt_label,
+                    },
+                )
+                all_translations.extend(tr)
+                if w and not warning:
+                    warning = w
+                elif w and warning and w != warning:
+                    warning = f"{warning} | {w}"
+            _upsert_product_attribute_value_i18n(all_translations, target_locale)
+            # Also sync enum value translations to AttributeValueI18n so title generation
+            # finds them for any variant (title renderer looks up by attribute_value_id).
+            _sync_pav_translations_to_attribute_value_i18n(all_translations, target_locale)
+            task.items_completed = len(all_translations)
             
             # Automatically translate attribute names if they're not already translated
             attribute_ids_to_translate = _get_missing_attribute_translations(task.target_ids, target_locale)
             if attribute_ids_to_translate:
                 attr_items = _fetch_attributes(attribute_ids_to_translate)
-                attr_translations, attr_warning = _translate_batch(attr_items, target_locale.code, task)
+                attr_translations, attr_warning = _translate_batch(
+                    attr_items, target_locale.code, task, context_extra={"scope": "attribute"}
+                )
                 _upsert_attribute_i18n(attr_translations, target_locale)
                 if attr_warning:
                     warning = f"{warning} | Attribute names: {attr_warning}" if warning else f"Attribute names: {attr_warning}"
@@ -162,19 +250,26 @@ def _fetch_attributes(ids: List[int]) -> List[Tuple[int, str]]:
     return [(rid, fr_labels.get(rid) or code) for rid, code in rows]
 
 
-def _fetch_attribute_values(ids: List[int]) -> List[Tuple[int, str]]:
-    """Fetch attribute values to translate."""
+def _fetch_attribute_values(ids: List[int]) -> List[Tuple[int, str, str]]:
+    """Fetch attribute values to translate. Returns (av_id, label, attribute_code)."""
     if not ids:
-        rows = list(AttributeValue.objects.all().values_list("id", "code"))
+        rows = list(
+            AttributeValue.objects.select_related("attribute").values_list("id", "code", "attribute__code")
+        )
     else:
-        rows = list(AttributeValue.objects.filter(id__in=ids).values_list("id", "code"))
-    
-    av_ids = [rid for rid, _ in rows]
+        rows = list(
+            AttributeValue.objects.filter(id__in=ids)
+            .select_related("attribute")
+            .values_list("id", "code", "attribute__code")
+        )
+
+    av_ids = [r[0] for r in rows]
     fr_map = dict(
-        AttributeValueI18n.objects.filter(attribute_value_id__in=av_ids, locale__code="fr")
-        .values_list("attribute_value_id", "label")
+        AttributeValueI18n.objects.filter(attribute_value_id__in=av_ids, locale__code="fr").values_list(
+            "attribute_value_id", "label"
+        )
     )
-    return [(rid, fr_map.get(rid) or code) for rid, code in rows]
+    return [(r[0], fr_map.get(r[0]) or r[1], r[2] or "") for r in rows]
 
 
 def _fetch_product_types(ids: List[int]) -> List[Tuple[int, str, str]]:
@@ -192,30 +287,30 @@ def _fetch_product_types(ids: List[int]) -> List[Tuple[int, str, str]]:
     return result
 
 
-def _fetch_product_attribute_values(ids: List[int]) -> List[Tuple[int, str]]:
-    """Fetch product attribute values to translate."""
+def _fetch_product_attribute_values(ids: List[int]) -> List[Tuple[int, str, str, str]]:
+    """Fetch product attribute values to translate. Returns (pav_id, text, attribute_code, product_type_label)."""
     if not ids:
-        # Get all attributes that are translatable
         translatable_attrs = Attribute.objects.filter(is_value_translatable=True)
-        rows = ProductAttributeValue.objects.filter(
-            attribute__in=translatable_attrs
-        ).select_related("attribute", "attribute_value").values_list("id", "value_text", "attribute_value__code")
+        qs = ProductAttributeValue.objects.filter(attribute__in=translatable_attrs).select_related(
+            "attribute", "attribute_value", "product__product_type", "variant__product__product_type"
+        )
     else:
-        # Filter by specific attribute IDs
-        rows = ProductAttributeValue.objects.filter(
-            attribute_id__in=ids
-        ).select_related("attribute", "attribute_value").values_list("id", "value_text", "attribute_value__code")
-    
-    values: List[Tuple[int, str]] = []
-    for rid, value_text, av_code in rows:
-        # Use value_text if available, otherwise use attribute_value code
-        text = value_text or av_code or ""
-        if not text:
+        qs = ProductAttributeValue.objects.filter(attribute_id__in=ids).select_related(
+            "attribute", "attribute_value", "product__product_type", "variant__product__product_type"
+        )
+
+    values: List[Tuple[int, str, str, str]] = []
+    for pav in qs:
+        text = (pav.value_text or (pav.attribute_value.code if pav.attribute_value else "") or "").strip()
+        if not text or len(text) < 2 or text.lower() in {"-", "—", "n/a", "na"}:
             continue
-        text = text.strip()
-        if len(text) < 2 or text.lower() in {"-", "—", "n/a", "na"}:
-            continue
-        values.append((rid, text))
+        attr_code = pav.attribute.code if pav.attribute else ""
+        if pav.variant_id and pav.variant.product_id:
+            pt = getattr(pav.variant.product, "product_type", None)
+        else:
+            pt = getattr(pav.product, "product_type", None) if pav.product_id else None
+        pt_label = (pt.default_label or pt.code) if pt else ""
+        values.append((pav.id, text, attr_code, pt_label))
     return values
 
 
@@ -238,45 +333,81 @@ def _get_missing_attribute_translations(attribute_ids: List[int], target_locale:
     return [attr_id for attr_id in attribute_ids if attr_id not in existing_translations]
 
 
-def _translate_batch(
-    items: List[Tuple[int, str]], target_locale_code: str, task: TranslationTask
+def _build_translation_prompts(
+    target_locale_code: str,
+    scope: str,
+    context_extra: Optional[Dict[str, Any]] = None,
+) -> Tuple[str, str]:
+    """Build system and user prompt for country-aware, product-type-aware translation (multi-language catalog)."""
+    locale_instruction = _get_locale_country_instruction(target_locale_code)
+    ctx = context_extra or {}
+
+    system = (
+        "You are a product catalog translator for multi-language e-commerce. "
+        "Translate using the terminology most commonly used by shoppers and search engines in the target country/region "
+        "for the given product category and field—not generic dictionary translations. "
+        "Output must be suitable for a multi-language catalog (clear, consistent, search-friendly in that locale)."
+    )
+
+    scope_hint = ""
+    if scope == "attribute":
+        scope_hint = "Translate these attribute names (e.g. size, color, material) as they appear in e-commerce in the target country."
+    elif scope == "attribute_value":
+        attr = ctx.get("attribute_code") or "this attribute"
+        scope_hint = f"Translate these enum/option values for attribute «{attr}» as customers and search typically use them in the target country."
+    elif scope == "product_type":
+        scope_hint = "Translate these product type labels and main category text as commonly used in the target country for search and navigation."
+    elif scope == "product_attribute_value":
+        attr = ctx.get("attribute_code") or "attribute"
+        pt = ctx.get("product_type_label") or "product"
+        scope_hint = f"Translate these product attribute values for attribute «{attr}» in product type «{pt}» as most commonly used in the target country (search and everyday usage)."
+    else:
+        scope_hint = "Translate these catalog texts for the target locale."
+
+    user_prefix = (
+        f"Translate the following into the target language. Target: {locale_instruction}\n"
+        f"{scope_hint}\n"
+        "Return JSON only: {\"translations\": [\"...\", \"...\"]} with the same length and order as the input. No other text.\n"
+    )
+    return system, user_prefix
+
+
+def translate_batch_openai(
+    items: List[Tuple[int, str]],
+    target_locale_code: str,
+    model: Optional[str] = None,
+    context_extra: Optional[Dict[str, Any]] = None,
 ) -> Tuple[List[Tuple[int, str]], Optional[str]]:
     """
-    Translate a batch of items using OpenAI API.
-    
-    Falls back to source text if API key is missing or translation fails.
+    Translate a batch of (id, text) items using OpenAI with country/product-type-aware prompts.
+    Used by the translation task processor and by management commands. Multi-language catalog oriented.
     """
     if not items:
         return ([], None)
-    
+
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
-        # Fallback: echo source text if no key present.
         return ([(rid, text) for rid, text in items], "Missing OPENAI_API_KEY; used source text")
 
     try:
         from openai import OpenAI
     except ImportError:
-        # If openai not installed in runtime, fallback to echo.
         return ([(rid, text) for rid, text in items], "openai package not installed; used source text")
+
+    scope = (context_extra or {}).get("scope") or "product_attribute_value"
+    system_msg, user_prefix = _build_translation_prompts(target_locale_code, scope, context_extra)
 
     client = OpenAI(api_key=api_key)
     labels = [text for _, text in items]
-    prompt = (
-        "Translate the following texts into the target language.\n"
-        f"Target language code: {target_locale_code}\n"
-        "Return JSON in the shape: {\"translations\": [\"...\", \"...\"]} with the same length/order as input.\n"
-        f"Texts: {json.dumps(labels, ensure_ascii=False)}"
-    )
-    # Use task.model if set, otherwise fall back to environment variable
-    model_name = task.model if task.model else os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-    
+    user_content = user_prefix + f"Texts: {json.dumps(labels, ensure_ascii=False)}"
+    model_name = model or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
     try:
         response = client.chat.completions.create(
             model=model_name,
             messages=[
-                {"role": "system", "content": "You are a concise product catalog translator."},
-                {"role": "user", "content": prompt},
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_content},
             ],
             temperature=0,
             response_format={"type": "json_object"},
@@ -288,7 +419,6 @@ def _translate_batch(
             raise ValueError(f"Unexpected translation response shape: {content[:200]}")
         return ([(rid, translated_list[idx]) for idx, (rid, _) in enumerate(items)], None)
     except Exception as exc:
-        # On any failure, fallback to source text to keep pipeline running, but surface the reason and content snippet.
         snippet = ""
         if "content" in locals():
             snippet = f" | content: {str(content)[:200]}"
@@ -296,6 +426,21 @@ def _translate_batch(
             [(rid, text) for rid, text in items],
             f"OpenAI translation failed: {exc}{snippet}",
         )
+
+
+def _translate_batch(
+    items: List[Tuple[int, str]],
+    target_locale_code: str,
+    task: TranslationTask,
+    context_extra: Optional[Dict[str, Any]] = None,
+) -> Tuple[List[Tuple[int, str]], Optional[str]]:
+    """Delegate to translate_batch_openai with task.model."""
+    return translate_batch_openai(
+        items,
+        target_locale_code,
+        model=task.model or None,
+        context_extra=context_extra,
+    )
 
 
 @transaction.atomic
@@ -357,3 +502,28 @@ def _upsert_product_attribute_value_i18n(translations: List[Tuple[int, str]], lo
         if not created and obj.value_text != value_text:
             obj.value_text = value_text
             obj.save(update_fields=["value_text"])
+
+
+def _sync_pav_translations_to_attribute_value_i18n(
+    translations: List[Tuple[int, str]], locale: Locale
+) -> None:
+    """
+    For PAVs that have an attribute_value_id (enum), write the same translation to
+    AttributeValueI18n so title generation finds it for any variant (title renderer
+    looks up by attribute_value_id; one row covers all PAVs using that value).
+    """
+    if not translations:
+        return
+    pav_ids = [pav_id for pav_id, _ in translations]
+    pav_to_av: Dict[int, Optional[int]] = dict(
+        ProductAttributeValue.objects.filter(id__in=pav_ids).values_list("id", "attribute_value_id")
+    )
+    seen_av: set = set()
+    av_translations: List[Tuple[int, str]] = []
+    for pav_id, value_text in translations:
+        av_id = pav_to_av.get(pav_id)
+        if av_id and av_id not in seen_av and (value_text or "").strip():
+            seen_av.add(av_id)
+            av_translations.append((av_id, (value_text or "").strip()))
+    if av_translations:
+        _upsert_attribute_value_i18n(av_translations, locale)

@@ -1,7 +1,15 @@
 from django.test import TestCase
 
-from catalog.models import Attribute, AttributeValue, Product, ProductAttributeValue, ProductType, Variant
-from content.models import Locale
+from catalog.models import (
+    Attribute,
+    AttributeValue,
+    Product,
+    ProductAttributeValue,
+    ProductType,
+    ProductVariantAxis,
+    Variant,
+)
+from content.models import AttributeValueI18n, Locale
 from pub.models import Channel, ChannelLocalePolicy, ChannelPolicySet, Template, TemplatePart
 from pub.services.title_renderer import (
     TitleApprovalRequired,
@@ -89,3 +97,51 @@ class TitlePolicyTests(TestCase):
         head, hook = _clamp_suggestion_limits(rules=rules, limit_head=10, limit_hook=10)
         self.assertEqual(head, 4)
         self.assertEqual(hook, 2)
+
+    def test_render_title_uses_attribute_value_i18n_for_axis_attribute(self):
+        """Generated titles use AttributeValueI18n label for the request locale, not raw code."""
+        attr = Attribute.objects.create(code="finish", data_type=Attribute.DataType.ENUM)
+        value = AttributeValue.objects.create(attribute=attr, code="EXC")
+        AttributeValueI18n.objects.create(
+            attribute_value=value,
+            locale=self.locale,
+            label="Exzellent",
+        )
+        ProductVariantAxis.objects.create(product=self.product, attribute=attr, position=0)
+        ProductAttributeValue.objects.create(
+            variant=self.variant,
+            attribute=attr,
+            attribute_value=value,
+        )
+        # Dedicated template: head term + literal + axis attribute
+        tpl = Template.objects.create(
+            product_type=self.product_type,
+            locale=self.locale,
+            channel=self.channel,
+            kind=Template.Kind.TITLE,
+            status=Template.Status.ACTIVE,
+            version=2,
+        )
+        TemplatePart.objects.create(template=tpl, position=0, part_type=TemplatePart.PartType.HEAD_TERM, required=True)
+        TemplatePart.objects.create(
+            template=tpl,
+            position=1,
+            part_type=TemplatePart.PartType.LITERAL,
+            literal_text=" ",
+            required=False,
+        )
+        TemplatePart.objects.create(
+            template=tpl,
+            position=2,
+            part_type=TemplatePart.PartType.AXIS_ATTRIBUTE,
+            attribute=attr,
+            required=False,
+        )
+        result = render_title(
+            variant=self.variant,
+            locale=self.locale,
+            channel=self.channel,
+            rules={"head_sources_order": ["product_type_fallback"]},
+        )
+        self.assertIn("Exzellent", result.title, "Title should use translated AttributeValueI18n label")
+        self.assertNotIn("EXC", result.title, "Title should not use raw attribute value code")

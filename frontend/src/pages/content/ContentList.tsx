@@ -59,10 +59,20 @@ export default function ContentList() {
         description="Generate titles and content for product variants"
         breadcrumbs={[{ label: 'Dashboard', href: '/' }, { label: 'Content' }]}
         actions={
-          <Button onClick={() => navigate('/content/new')}>
-            <Plus className="w-4 h-4 mr-2" />
-            New Batch
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => navigate('/content/generated-titles')}>
+              <FileText className="w-4 h-4 mr-2" />
+              All generated titles
+            </Button>
+            <Button variant="outline" onClick={() => navigate('/content/generate-titles')}>
+              <FileText className="w-4 h-4 mr-2" />
+              Generate titles
+            </Button>
+            <Button onClick={() => navigate('/content/new')}>
+              <Plus className="w-4 h-4 mr-2" />
+              New Batch
+            </Button>
+          </div>
         }
       />
 

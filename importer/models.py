@@ -25,10 +25,14 @@ class ProductImport(models.Model):
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.UPLOADED)
     row_count = models.IntegerField(default=0)
     error_count = models.IntegerField(default=0)
+    parse_error_message = models.TextField(
+        blank=True,
+        help_text="Detailed error message explaining why parsing failed or why 0 rows were detected"
+    )
     
     # Import behavior settings
     group_by_product_key = models.BooleanField(
-        default=True,
+        default=False,
         help_text=(
             "If True, variants with the same PRODUCT_KEY will be grouped into one Product. "
             "If False, each variant will get its own Product (standalone mode) for manual grouping later. "
@@ -151,6 +155,17 @@ class ImportColumnRule(models.Model):
         BRAND = "BRAND", "Brand"
         TITLE = "TITLE", "Title"
         DESCRIPTION = "DESCRIPTION", "Description"
+        # Variant-level fields
+        BARCODE = "BARCODE", "Barcode"
+        MPN = "MPN", "MPN (Manufacturer Part Number)"
+        SOURCE_SKU = "SOURCE_SKU", "Source SKU"
+        SOURCE_SUPPLIER = "SOURCE_SUPPLIER", "Source Supplier"
+        SOURCE_LOCALE = "SOURCE_LOCALE", "Source Locale"
+        # Product-level fields
+        PRODUCT_MODEL = "PRODUCT_MODEL", "Product Model"
+        PRODUCT_SERIES = "PRODUCT_SERIES", "Product Series"
+        PRODUCT_CODE = "PRODUCT_CODE", "Product Code"
+        # Other
         ATTRIBUTE = "ATTRIBUTE", "Attribute"
         IGNORE = "IGNORE", "Ignore"
 

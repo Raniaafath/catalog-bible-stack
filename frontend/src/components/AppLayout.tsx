@@ -4,6 +4,7 @@ import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   LayoutDashboard,
+  Package,
   Upload,
   Languages,
   Search,
@@ -15,6 +16,12 @@ import {
   LogOut,
   User,
   Shield,
+  Boxes,
+  Layers,
+  Bookmark,
+  FileText,
+  LayoutTemplate,
+  Settings2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -37,11 +44,17 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   { label: 'Dashboard', href: '/', icon: LayoutDashboard },
+  { label: 'Products', href: '/products', icon: Package },
+  { label: 'Variants', href: '/variants', icon: Boxes },
+  { label: 'Listings', href: '/groups', icon: Layers },
   { label: 'Imports', href: '/imports', icon: Upload },
   { label: 'Translations', href: '/translations', icon: Languages },
   { label: 'Keywords', href: '/keywords', icon: Search },
+  { label: 'Saved terms', href: '/keywords/saved-terms', icon: Bookmark },
+  { label: 'Title templates', href: '/templates', icon: LayoutTemplate },
   { label: 'Content', href: '/content', icon: Sparkles },
   { label: 'Exports', href: '/exports', icon: Download },
+  { label: 'Settings', href: '/settings', icon: Settings2 },
 ];
 
 interface AppLayoutProps {
@@ -66,8 +79,8 @@ export function AppLayout({ children }: AppLayoutProps) {
   };
 
   const getUserInitials = () => {
-    const email = user?.email || '';
-    return email.substring(0, 2).toUpperCase();
+    const source = user?.full_name || user?.email || '';
+    return source.substring(0, 2).toUpperCase();
   };
 
   const UserMenu = ({ showLabel = true }: { showLabel?: boolean }) => (
@@ -75,7 +88,6 @@ export function AppLayout({ children }: AppLayoutProps) {
       <DropdownMenuTrigger asChild>
         <Button variant="ghost" className={cn("gap-2", showLabel ? "w-full justify-start px-3" : "h-10 w-10 p-0")}>
           <Avatar className="h-7 w-7">
-            <AvatarImage src={user?.user_metadata?.avatar_url} />
             <AvatarFallback className="text-xs bg-primary text-primary-foreground">
               {getUserInitials()}
             </AvatarFallback>

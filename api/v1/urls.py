@@ -55,11 +55,26 @@ urlpatterns = [
         name="update-translation",
     ),
     path(
+        "translations/export/<int:task_id>/",
+        views.ExportTranslationsView.as_view(),
+        name="export-translations",
+    ),
+    path(
+        "translations/export-translated-products-csv/",
+        views.ExportTranslatedProductsCsvView.as_view(),
+        name="export-translated-products-csv",
+    ),
+    path(
         "translations/<str:locale_code>/products/<int:product_id>/",
         views.ProductTranslationView.as_view(),
         name="product-translation",
     ),
     path("keywords/planner-run/", views.KeywordPlannerRunCreateView.as_view(), name="keywords-planner-run"),
+    path(
+        "keywords/planner-run/import-csv/",
+        views.KeywordPlannerRunImportCsvView.as_view(),
+        name="keywords-planner-run-import-csv",
+    ),
     path(
         "keywords/planner-run/<int:run_id>/",
         views.KeywordPlannerRunDetailView.as_view(),
@@ -69,6 +84,46 @@ urlpatterns = [
         "keywords/planner-run/<int:run_id>/approve/",
         views.KeywordPlannerRunApproveView.as_view(),
         name="keywords-planner-run-approve",
+    ),
+    path(
+        "keywords/planner-run/<int:run_id>/map/",
+        views.KeywordPlannerRunMapView.as_view(),
+        name="keywords-planner-run-map",
+    ),
+    path(
+        "keywords/planner-run/<int:run_id>/mappings/",
+        views.KeywordPlannerRunMappingsView.as_view(),
+        name="keywords-planner-run-mappings",
+    ),
+    path(
+        "keywords/planner-run/mappings/<int:attribute_map_id>/",
+        views.KeywordPlannerRunMappingDetailView.as_view(),
+        name="keywords-planner-run-mapping-detail",
+    ),
+    path(
+        "keywords/planner-run/<int:run_id>/persist-mappings/",
+        views.KeywordPlannerRunPersistMappingsView.as_view(),
+        name="keywords-planner-run-persist-mappings",
+    ),
+    path(
+        "keywords/planner-run/<int:run_id>/suggested-terms/",
+        views.KeywordPlannerRunSuggestedTermsView.as_view(),
+        name="keywords-planner-run-suggested-terms",
+    ),
+    path(
+        "keywords/planner-run/<int:run_id>/product-maps/",
+        views.KeywordPlannerRunProductMapsView.as_view(),
+        name="keywords-planner-run-product-maps",
+    ),
+    path(
+        "keywords/planner-run/<int:run_id>/product-maps/<int:map_id>/",
+        views.KeywordPlannerRunProductMapDetailView.as_view(),
+        name="keywords-planner-run-product-map-detail",
+    ),
+    path(
+        "keywords/saved-terms/",
+        views.SavedTermsView.as_view(),
+        name="keywords-saved-terms",
     ),
     path("titles/generate/", views.TitleGenerateView.as_view(), name="titles-generate"),
     path("titles/suggestions/", views.TitleSuggestionsView.as_view(), name="titles-suggestions"),
@@ -99,6 +154,11 @@ urlpatterns = [
         name="channel-listing-remove-variants",
     ),
     path(
+        "channel-listings/<int:listing_id>/available-variants/",
+        views.ChannelListingAvailableVariantsView.as_view(),
+        name="channel-listing-available-variants",
+    ),
+    path(
         "channel-listings/<int:listing_id>/differences/",
         views.ChannelListingDifferencesView.as_view(),
         name="channel-listing-differences",
@@ -114,9 +174,39 @@ urlpatterns = [
         name="channel-listing-available-templates",
     ),
     path(
+        "channel-listings/<int:listing_id>/create-default-template/",
+        views.ChannelListingCreateDefaultTemplateView.as_view(),
+        name="channel-listing-create-default-template",
+    ),
+    path(
         "channel-listings/<int:listing_id>/generate-titles/",
         views.ChannelListingGenerateTitlesView.as_view(),
         name="channel-listing-generate-titles",
+    ),
+    path(
+        "channel-listings/<int:listing_id>/generated-titles/",
+        views.ChannelListingGeneratedTitlesView.as_view(),
+        name="channel-listing-generated-titles",
+    ),
+    path(
+        "channel-listings/<int:listing_id>/generated-titles/<int:variant_id>/",
+        views.ChannelListingGeneratedTitleUpdateView.as_view(),
+        name="channel-listing-generated-title-update",
+    ),
+    path(
+        "products/<int:product_id>/head-selection/",
+        views.ProductHeadSelectionView.as_view(),
+        name="product-head-selection",
+    ),
+    path(
+        "variants/<int:variant_id>/attribute-details/",
+        views.VariantAttributeDetailsView.as_view(),
+        name="variant-attribute-details",
+    ),
+    path(
+        "generated-titles/",
+        views.AllGeneratedTitlesView.as_view(),
+        name="all-generated-titles",
     ),
     path("", include(router.urls)),
 ]

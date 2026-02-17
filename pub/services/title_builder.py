@@ -22,7 +22,7 @@ def build_title_for_variant(
     include_descriptions: bool = False,
 ) -> Tuple[GenerationRun, GenerationOutput]:
     try:
-        output = save_generation(
+        output, _ = save_generation(
             variant=variant,
             locale=locale,
             channel=channel,

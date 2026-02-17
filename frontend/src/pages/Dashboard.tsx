@@ -14,6 +14,7 @@ import {
   CheckCircle2,
   AlertCircle,
   Loader2,
+  LayoutTemplate,
 } from 'lucide-react';
 import { PageHeader } from '@/components/PageHeader';
 import { StatCard } from '@/components/StatCard';
@@ -22,6 +23,8 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   getImports,
+  getProducts,
+  getTemplates,
   getTranslationTasks,
   getPlannerRuns,
   getGenerationBatches,
@@ -44,6 +47,19 @@ type ActivityItem = {
 
 export default function Dashboard() {
   const navigate = useNavigate();
+
+  const { data: productsData, isLoading: productsLoading, error: productsError } = useQuery({
+    queryKey: ['products'],
+    queryFn: () => getProducts({ page: 1, page_size: 1 }),
+  });
+
+  // Debug logging
+  if (productsError) {
+    console.error('Products API Error:', productsError);
+  }
+  if (productsData) {
+    console.log('Products Data:', productsData);
+  }
 
   const { data: importsData, isLoading: importsLoading } = useQuery({
     queryKey: ['imports'],
@@ -70,12 +86,17 @@ export default function Dashboard() {
     queryFn: () => getExportJobs({ page: 1, page_size: 5 }),
   });
 
+  const { data: templatesData } = useQuery({
+    queryKey: ['templates-count'],
+    queryFn: () => getTemplates({ page: 1, page_size: 1 }),
+  });
+
   // Combine recent activity
   const recentActivity: ActivityItem[] = [
     ...(importsData?.results || []).map((i: Import) => ({
       id: `import-${i.id}`,
       type: 'import' as const,
-      title: i.filename,
+      title: i.original_filename,
       status: i.status,
       time: i.created_at,
     })),
@@ -120,6 +141,7 @@ export default function Dashboard() {
   };
 
   const isLoading =
+    productsLoading ||
     importsLoading ||
     translationsLoading ||
     keywordsLoading ||
@@ -127,7 +149,9 @@ export default function Dashboard() {
     exportsLoading;
 
   const quickActions = [
+    { label: 'Add Product', href: '/products/new', icon: Package },
     { label: 'New Import', href: '/imports/new', icon: Upload },
+    { label: 'Title templates', href: '/templates', icon: LayoutTemplate },
     { label: 'Keyword Run', href: '/keywords/new', icon: Search },
     { label: 'Generate Content', href: '/content/new', icon: Sparkles },
     { label: 'New Export', href: '/exports/new', icon: Download },
@@ -141,12 +165,12 @@ export default function Dashboard() {
       />
 
       {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8 stagger-fade-in">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-4 mb-8 stagger-fade-in">
         <StatCard
           title="Products"
-          value={0}
+          value={productsData?.count ?? 0}
           icon={Package}
-          onClick={() => navigate('/imports')}
+          onClick={() => navigate('/products')}
         />
         <StatCard
           title="Imports"
@@ -177,6 +201,12 @@ export default function Dashboard() {
           value={exportsData?.count ?? 0}
           icon={Download}
           onClick={() => navigate('/exports')}
+        />
+        <StatCard
+          title="Title templates"
+          value={templatesData?.count ?? 0}
+          icon={LayoutTemplate}
+          onClick={() => navigate('/templates')}
         />
       </div>
 

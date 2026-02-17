@@ -17,6 +17,10 @@ CSRF_TRUSTED_ORIGINS = [
 DEFAULT_CORS_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    "http://localhost:8080",
+    "http://127.0.0.1:8080",
+    "http://localhost:8082",
+    "http://127.0.0.1:8082",
     "https://bib.neomarkgroup.fr",
 ]
 CORS_ALLOWED_ORIGINS = [
@@ -43,6 +47,8 @@ INSTALLED_APPS = [
 
     "corsheaders",
     "rest_framework",
+    "rest_framework.authtoken",
+    "core",
     "catalog",
     "content",
     "kw",
@@ -110,17 +116,26 @@ USE_TZ = True
 # Default locale for content fallback (used by title rendering)
 DEFAULT_LOCALE_CODE = os.getenv("DEFAULT_LOCALE_CODE", "fr")
 
+# When True, title rendering uses only the target locale for attribute translations.
+# When False (default), falls back to DEFAULT_LOCALE_CODE for missing translations,
+# which can mix languages (e.g. German head + French attributes).
+TITLE_STRICT_LOCALE = os.getenv("TITLE_STRICT_LOCALE", "true").lower() in ("1", "true", "yes")
+
 # Static files
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STORAGES = {
     "staticfiles": {"BACKEND": "whitenoise.storage.CompressedStaticFilesStorage"},
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
 }
+MEDIA_URL = os.getenv("MEDIA_URL", "/media/")
+MEDIA_ROOT = Path(os.getenv("MEDIA_ROOT", str(BASE_DIR / "media")))
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework.authentication.TokenAuthentication",
         "rest_framework.authentication.SessionAuthentication",
         "rest_framework.authentication.BasicAuthentication",
     ],
@@ -133,4 +148,5 @@ REST_FRAMEWORK = {
         "rest_framework.filters.OrderingFilter",
         "rest_framework.filters.SearchFilter",
     ],
+    "EXCEPTION_HANDLER": "api.v1.exception_handlers.api_exception_handler",
 }

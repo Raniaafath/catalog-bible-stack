@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ArrowRight, Tag, Loader2 } from 'lucide-react';
@@ -25,16 +25,27 @@ export default function ImportAssignCategory() {
     enabled: !!importId,
   });
 
-  const { data: productTypes, isLoading: typesLoading } = useQuery({
+  const { data: productTypes, isLoading: typesLoading, error: typesError } = useQuery({
     queryKey: ['product-types'],
     queryFn: getProductTypes,
   });
 
+  useEffect(() => {
+    if (productTypes) {
+      console.log('Product Types loaded:', productTypes);
+      console.log('Results count:', productTypes.results?.length);
+      console.log('Results:', productTypes.results);
+    }
+    if (typesError) {
+      console.error('Product Types error:', typesError);
+    }
+  }, [productTypes, typesError]);
+
   const assignMutation = useMutation({
     mutationFn: (cat: string) => assignCategory(importId, cat),
-    onSuccess: () => {
+    onSuccess: (batch) => {
       queryClient.invalidateQueries({ queryKey: ['import', importId] });
-      navigate(`/imports/${id}/map-attributes`);
+      navigate(`/imports/${id}/map-attributes?batch=${batch.id}`);
     },
   });
 
@@ -64,7 +75,7 @@ export default function ImportAssignCategory() {
         breadcrumbs={[
           { label: 'Dashboard', href: '/' },
           { label: 'Imports', href: '/imports' },
-          { label: importData?.filename || `Import #${id}`, href: `/imports/${id}` },
+          { label: importData?.original_filename || `Import #${id}`, href: `/imports/${id}` },
           { label: 'Assign Category' },
         ]}
       />
@@ -90,8 +101,8 @@ export default function ImportAssignCategory() {
                   </SelectTrigger>
                   <SelectContent>
                     {productTypes?.results?.map((type) => (
-                      <SelectItem key={type.id} value={type.slug}>
-                        {type.name}
+                      <SelectItem key={type.id} value={type.code}>
+                        {type.category_path || type.default_label || type.code}
                       </SelectItem>
                     ))}
                     <SelectItem value="custom">+ Create new category</SelectItem>

@@ -165,9 +165,11 @@ class Command(BaseCommand):
                     if dry:
                         created += 1
                         continue
-                    source = item.get("match_kind") or item.get("source") or ProductKeywordMap.Source.TEXT
-                    if source not in ProductKeywordMap.Source.values:
-                        source = ProductKeywordMap.Source.TEXT
+                    raw_source = item.get("match_kind") or item.get("source") or ProductKeywordMap.Source.TEXT
+                    valid_sources = {s.value for s in ProductKeywordMap.Source}
+                    source = raw_source if isinstance(raw_source, str) and raw_source in valid_sources else ProductKeywordMap.Source.TEXT
+                    if hasattr(source, "value"):
+                        source = source.value
                     obj, is_created = ProductKeywordMap.objects.update_or_create(
                         product=product,
                         keyword=kw,
@@ -184,6 +186,7 @@ class Command(BaseCommand):
                             "evidence": {
                                 "matched_phrase": item.get("matched_phrase"),
                                 "model": item.get("model"),
+                                "variant_id": item.get("variant_id"),
                             },
                         },
                     )

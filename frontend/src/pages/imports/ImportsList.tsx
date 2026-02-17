@@ -18,14 +18,14 @@ export default function ImportsList() {
 
   const columns: Column<Import>[] = [
     {
-      key: 'filename',
+      key: 'original_filename',
       header: 'Filename',
       render: (item) => (
         <div className="flex items-center gap-3">
           <div className="p-2 rounded-lg bg-muted">
             <FileSpreadsheet className="w-4 h-4 text-muted-foreground" />
           </div>
-          <span className="font-medium">{item.filename}</span>
+          <span className="font-medium">{item.original_filename}</span>
         </div>
       ),
     },

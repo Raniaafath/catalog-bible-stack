@@ -5,6 +5,7 @@ from .models import (
     Channel,
     ChannelBundlePolicy,
     ChannelConstraintPolicy,
+    ChannelListing,
     ChannelListingMap,
     ChannelLocalePolicy,
     ChannelPolicySet,
@@ -129,8 +130,17 @@ class ApprovalAdmin(admin.ModelAdmin):
     search_fields = ("entity_type", "entity_id")
 
 
+@admin.register(ChannelListing)
+class ChannelListingAdmin(admin.ModelAdmin):
+    list_display = ("product", "channel", "locale", "name", "is_default", "created_at")
+    list_filter = ("channel", "locale", "is_default")
+    search_fields = ("product__code", "channel__code", "name")
+    raw_id_fields = ("product", "locale")
+
+
 @admin.register(ChannelListingMap)
 class ChannelListingMapAdmin(admin.ModelAdmin):
-    list_display = ("variant", "channel", "external_id", "sync_status", "last_sync_at")
-    list_filter = ("channel", "sync_status")
-    search_fields = ("variant__id", "channel__code", "external_id")
+    list_display = ("variant", "listing", "channel", "external_id", "sync_status", "last_sync_at")
+    list_filter = ("channel", "sync_status", "listing")
+    search_fields = ("variant__id", "channel__code", "external_id", "listing__name")
+    raw_id_fields = ("listing", "variant")

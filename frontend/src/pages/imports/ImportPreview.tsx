@@ -5,7 +5,7 @@ import { PageHeader } from '@/components/PageHeader';
 import { StatusBadge } from '@/components/StatusBadge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { getImport, getImportPreview, Import, ImportPreview as ImportPreviewType } from '@/lib/api';
+import { getImport, getImportPreview } from '@/lib/api';
 import { Loader2 } from 'lucide-react';
 
 export default function ImportPreview() {
@@ -35,21 +35,30 @@ export default function ImportPreview() {
     );
   }
 
-  const hasErrors = (previewData?.errors?.length ?? 0) > 0;
+  const rows = previewData?.rows || [];
+  const headers =
+    previewData?.columns?.length
+      ? previewData.columns
+      : rows.length > 0
+        ? Object.keys(rows[0].raw || {})
+        : [];
+  const tableHeaders = rows.length > 0 ? ['row_number', ...headers] : [];
+  const rowErrors = rows.filter((row) => row.errors);
+  const hasErrors = (importData?.error_count ?? 0) > 0;
 
   return (
     <div className="page-container">
       <PageHeader
-        title={`Preview: ${importData?.filename || 'Import'}`}
+        title={`Preview: ${importData?.original_filename || 'Import'}`}
         description="Review the imported data before proceeding"
         breadcrumbs={[
           { label: 'Dashboard', href: '/' },
           { label: 'Imports', href: '/imports' },
-          { label: importData?.filename || `Import #${id}` },
+          { label: importData?.original_filename || `Import #${id}` },
         ]}
         actions={
           <div className="flex gap-3">
-            {importData?.status === 'awaiting_mapping' && (
+            {importData?.status === 'parsed' && (
               <Button onClick={() => navigate(`/imports/${id}/assign-category`)}>
                 Assign Category
                 <ArrowRight className="w-4 h-4 ml-2" />
@@ -79,7 +88,9 @@ export default function ImportPreview() {
               <div>
                 <p className="text-sm text-muted-foreground">Rows</p>
                 <p className="text-2xl font-bold font-display">
-                  {importData?.row_count.toLocaleString() ?? 0}
+                  {typeof importData?.row_count === 'number'
+                    ? importData.row_count.toLocaleString()
+                    : '0'}
                 </p>
               </div>
               <CheckCircle2 className="w-8 h-8 text-status-success opacity-50" />
@@ -107,16 +118,26 @@ export default function ImportPreview() {
           <CardHeader className="pb-3">
             <CardTitle className="text-status-warning flex items-center gap-2">
               <AlertTriangle className="w-5 h-5" />
-              Import Errors
+              Import Errors ({importData?.error_count ?? 0})
             </CardTitle>
           </CardHeader>
           <CardContent>
             <div className="space-y-2 max-h-48 overflow-y-auto">
-              {previewData?.errors.map((err, i) => (
-                <div key={i} className="text-sm p-2 rounded bg-status-error-bg text-status-error-foreground">
-                  <span className="font-medium">Row {err.row}:</span> {err.message}
+              {rowErrors.length > 0 ? (
+                rowErrors.slice(0, 5).map((row) => (
+                  <div
+                    key={row.id}
+                    className="text-sm p-2 rounded bg-status-error-bg text-status-error-foreground"
+                  >
+                    <span className="font-medium">Row {row.row_number}:</span>{' '}
+                    {JSON.stringify(row.errors)}
+                  </div>
+                ))
+              ) : (
+                <div className="text-sm text-muted-foreground">
+                  Errors were detected during parsing, but no row error details are available in the preview.
                 </div>
-              ))}
+              )}
             </div>
           </CardContent>
         </Card>
@@ -132,26 +153,28 @@ export default function ImportPreview() {
             <table className="data-table">
               <thead>
                 <tr>
-                  {previewData?.headers.map((header, i) => (
+                  {tableHeaders.map((header, i) => (
                     <th key={i}>{header}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {previewData?.rows.slice(0, 20).map((row, i) => (
+                {rows.slice(0, 20).map((row, i) => (
                   <tr key={i}>
-                    {previewData?.headers.map((header, j) => (
+                    {tableHeaders.map((header, j) => (
                       <td key={j} className="max-w-[200px] truncate">
-                        {String(row[header] ?? '')}
+                        {header === 'row_number'
+                          ? row.row_number
+                          : String(row.raw?.[header] ?? '')}
                       </td>
                     ))}
                   </tr>
                 ))}
               </tbody>
             </table>
-            {(previewData?.rows.length ?? 0) > 20 && (
+            {(rows.length ?? 0) > 0 && (
               <div className="text-center py-4 text-sm text-muted-foreground border-t">
-                Showing 20 of {previewData?.rows.length} rows
+                Showing {Math.min(20, rows.length)} of {rows.length} preview rows
               </div>
             )}
           </div>

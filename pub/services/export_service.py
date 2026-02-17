@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import csv
 import os
+from decimal import Decimal
 from typing import Any, Dict, Iterable, List, Optional
 
 from django.utils import timezone
 
-from catalog.models import Product, Variant
+from django.db import models
+
+from catalog.models import Attribute, Product, ProductAttributeValue, Variant
 from content.models import Locale
 from pub.models import ExportJob, ExportProfile, GenerationBatch, GenerationBatchItem, GenerationOutput
 from pub.services.title_renderer import _get_title_generation_policy
@@ -90,8 +93,49 @@ def _build_rows(*, job: ExportJob, profile: ExportProfile) -> Iterable[List[str]
         mode_override=None,
     )
 
-    items = GenerationBatchItem.objects.filter(batch=batch).select_related("variant", "product", "generation_run")
+    items = list(GenerationBatchItem.objects.filter(batch=batch).select_related("variant", "product", "generation_run"))
     output_map = _load_outputs(items)
+    
+    # Prefetch attribute values for all variants and products to avoid N+1 queries
+    variant_ids = [item.variant_id for item in items if item.variant_id]
+    product_ids = [item.product_id for item in items if item.product_id]
+    
+    # Load all attribute values for variants and products
+    variant_pavs = {}
+    product_pavs = {}
+    if variant_ids or product_ids:
+        pavs = ProductAttributeValue.objects.filter(
+            models.Q(variant_id__in=variant_ids) | models.Q(product_id__in=product_ids)
+        ).select_related("attribute", "attribute_value")
+        
+        for pav in pavs:
+            if pav.variant_id:
+                variant_pavs.setdefault(pav.variant_id, {})[pav.attribute.code] = pav
+            if pav.product_id:
+                product_pavs.setdefault(pav.product_id, {})[pav.attribute.code] = pav
+    
+    # Build attribute code cache - include both explicit attribute sources and potential fallback fields
+    attribute_codes = set()
+    for col in columns:
+        source = col.get("source", {})
+        if source.get("type") == "attribute":
+            attribute_codes.add(source.get("code", ""))
+        elif source.get("type") in ("variant", "product"):
+            # Also cache fields that might be attributes (for fallback lookup)
+            field = source.get("field", "")
+            if field:
+                attribute_codes.add(field)
+    
+    # Also add all attribute codes from the prefetched PAVs
+    for pav_list in [*variant_pavs.values(), *product_pavs.values()]:
+        for pav in pav_list.values():
+            if pav.attribute:
+                attribute_codes.add(pav.attribute.code)
+    
+    attribute_cache = {}
+    if attribute_codes:
+        attributes = Attribute.objects.filter(code__in=attribute_codes)
+        attribute_cache = {attr.code: attr for attr in attributes}
 
     total_rows = 0
     total_errors = 0
@@ -105,6 +149,9 @@ def _build_rows(*, job: ExportJob, profile: ExportProfile) -> Iterable[List[str]
                 variant=variant,
                 product=product,
                 outputs=output_map.get(item.generation_run_id, {}),
+                variant_pavs=variant_pavs.get(variant.id if variant else None, {}),
+                product_pavs=product_pavs.get(product.id if product else None, {}),
+                attribute_cache=attribute_cache,
             )
             value = _apply_transforms(value, col.get("transform", []), policy.rules)
             if col.get("required") and not value:
@@ -119,18 +166,68 @@ def _build_rows(*, job: ExportJob, profile: ExportProfile) -> Iterable[List[str]
     }
 
 
-def _resolve_value(source: dict, *, variant: Variant, product: Product, outputs: Dict[str, Dict[int, str]]) -> str:
+def _resolve_value(
+    source: dict,
+    *,
+    variant: Variant,
+    product: Product,
+    outputs: Dict[str, Dict[int, str]],
+    variant_pavs: Dict[str, ProductAttributeValue] = None,
+    product_pavs: Dict[str, ProductAttributeValue] = None,
+    attribute_cache: Dict[str, Attribute] = None,
+) -> str:
     src_type = source.get("type")
     if src_type == "variant":
-        return str(getattr(variant, source.get("field"), "") or "")
+        field = source.get("field", "")
+        # Try to get the field from variant model
+        value = getattr(variant, field, None)
+        if value is not None and value != "":
+            return str(value)
+        # If field doesn't exist or is empty, try as attribute (fallback)
+        if field and variant_pavs and field in variant_pavs:
+            pav = variant_pavs[field]
+            return _format_attribute_value(pav, attribute_cache.get(field) if attribute_cache else None)
+        # Also check product-level attributes as fallback
+        if field and product_pavs and field in product_pavs:
+            pav = product_pavs[field]
+            return _format_attribute_value(pav, attribute_cache.get(field) if attribute_cache else None)
+        return ""
     if src_type == "product":
-        return str(getattr(product, source.get("field"), "") or "")
+        field = source.get("field", "")
+        # Try to get the field from product model
+        value = getattr(product, field, None)
+        if value is not None and value != "":
+            return str(value)
+        # If field doesn't exist or is empty, try as attribute (fallback)
+        if field and product_pavs and field in product_pavs:
+            pav = product_pavs[field]
+            return _format_attribute_value(pav, attribute_cache.get(field) if attribute_cache else None)
+        # Also check variant-level attributes as fallback
+        if field and variant_pavs and field in variant_pavs:
+            pav = variant_pavs[field]
+            return _format_attribute_value(pav, attribute_cache.get(field) if attribute_cache else None)
+        return ""
     if src_type == "generation_output":
         field = source.get("field")
         position = source.get("position", 0)
         return outputs.get(field, {}).get(position, "") or ""
     if src_type == "literal":
         return str(source.get("value", "") or "")
+    if src_type == "attribute":
+        attribute_code = source.get("code", "")
+        if not attribute_code:
+            return ""
+        
+        # Try variant-level first, then product-level
+        pav = None
+        if variant_pavs and attribute_code in variant_pavs:
+            pav = variant_pavs[attribute_code]
+        elif product_pavs and attribute_code in product_pavs:
+            pav = product_pavs[attribute_code]
+        
+        if pav:
+            return _format_attribute_value(pav, attribute_cache.get(attribute_code) if attribute_cache else None)
+        return ""
     return ""
 
 
@@ -202,6 +299,48 @@ def _load_outputs(items: Iterable[GenerationBatchItem]) -> Dict[int, Dict[str, D
         field_map = run_map.setdefault(output.field, {})
         field_map[output.position or 0] = output.text
     return output_map
+
+
+def _format_attribute_value(pav: ProductAttributeValue, attribute: Optional[Attribute] = None) -> str:
+    """
+    Format a ProductAttributeValue into a string for export.
+    Similar to _stringify_attribute_value but simpler (no i18n/synonyms).
+    """
+    if not pav:
+        return ""
+    
+    # Use attribute from pav if not provided
+    if not attribute:
+        attribute = pav.attribute
+    
+    # Handle ENUM type - use attribute_value code
+    if attribute.data_type == Attribute.DataType.ENUM and pav.attribute_value:
+        return pav.attribute_value.code
+    
+    # Handle different value types
+    if pav.value_text:
+        text = pav.value_text
+    elif pav.value_number is not None:
+        # Format numbers nicely
+        if isinstance(pav.value_number, Decimal):
+            if pav.value_number == pav.value_number.to_integral_value():
+                text = str(int(pav.value_number))
+            else:
+                normalized = pav.value_number.normalize()
+                text = format(normalized, "f").rstrip("0").rstrip(".")
+        else:
+            text = str(pav.value_number)
+    elif pav.value_bool is not None:
+        text = "Yes" if pav.value_bool else "No"
+    elif pav.value_json:
+        text = str(pav.value_json)
+    else:
+        return ""
+    
+    # Add unit if present
+    if pav.unit:
+        return f"{text} {pav.unit}".strip()
+    return text
 
 
 def _export_path(*, job: ExportJob, ext: str) -> str:

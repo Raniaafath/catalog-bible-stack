@@ -1,20 +1,33 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from decimal import Decimal
 import re
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
+# #region agent log
+def _dlog(msg: str, data: dict, hypothesis_id: str):
+    try:
+        from core.debug_utils import DEBUG_LOG_PATH
+        with open(DEBUG_LOG_PATH, "a") as f:
+            f.write(json.dumps({"message": msg, "data": data, "hypothesisId": hypothesis_id, "location": "title_renderer"}) + "\n")
+    except Exception:
+        pass
+# #endregion
 from django.db.models import Case, DecimalField, IntegerField, OuterRef, Q, Subquery, Value, When
 from django.db.models.functions import Coalesce
 
 from catalog.models import Attribute, ProductAttributeValue, ProductVariantAxis, Variant
+from catalog.services.axis_resolution import AxisInfo, get_axes_for_context
 from content.models import (
     AttributeValueI18n,
     AttributeValueSynonym,
     Locale,
+    ProductAttributeValueI18n,
+    ProductHookTerm,
     ProductTypeI18n,
     ProductTypeSynonym,
     SynonymStatus,
@@ -127,6 +140,7 @@ class TitleRenderResult:
     hook_source: str
     head_keyword_id: Optional[int]
     hook_keyword_id: Optional[int]
+    missing_translations: Optional[Dict[int, Dict[str, str]]] = None  # av_id -> {code, attr_code} for UI "translate these"
 
 
 @dataclass(frozen=True)
@@ -149,20 +163,39 @@ def render_title(
     selection: Optional[TitleSelection] = None,
     rules: Optional[Dict[str, object]] = None,
     template_kind: str = Template.Kind.TITLE,
+    listing=None,
+    template_id: Optional[int] = None,
 ) -> TitleRenderResult:
     rules = _merge_rules(rules)
     product = variant.product
-    template = (
-        Template.objects.filter(
-            product_type=product.product_type,
-            locale=locale,
-            channel=channel,
-            kind=template_kind,
-            status=Template.Status.ACTIVE,
+    # Use listing axes (e.g. color, size) when generating from a listing; else product axes
+    axes_for_context: Optional[List[AxisInfo]] = get_axes_for_context(
+        product, channel=channel, listing=listing
+    ) if channel else None
+    if template_id:
+        try:
+            template = Template.objects.get(
+                id=template_id,
+                product_type=product.product_type,
+                locale=locale,
+                channel=channel,
+                kind=template_kind,
+                status=Template.Status.ACTIVE,
+            )
+        except Template.DoesNotExist:
+            template = None
+    else:
+        template = (
+            Template.objects.filter(
+                product_type=product.product_type,
+                locale=locale,
+                channel=channel,
+                kind=template_kind,
+                status=Template.Status.ACTIVE,
+            )
+            .order_by("-version", "-id")
+            .first()
         )
-        .order_by("-version", "-id")
-        .first()
-    )
     if not template:
         raise TitleRenderError(
             f"No active {template_kind} template for product_type={product.product_type_id} locale={locale.code} channel={channel.code}"
@@ -184,14 +217,58 @@ def render_title(
             "attribute", "attribute_value"
         )
     }
-    attr_value_ids = [
-        pav.attribute_value_id
-        for pav in list(variant_values.values()) + list(product_values.values())
-        if pav.attribute_value_id
-    ]
+    all_pavs = list(variant_values.values()) + list(product_values.values())
+    attr_value_ids = [pav.attribute_value_id for pav in all_pavs if pav.attribute_value_id]
+    pav_ids = [pav.id for pav in all_pavs]
     default_locale_code = getattr(settings, "DEFAULT_LOCALE_CODE", getattr(settings, "LANGUAGE_CODE", None))
-    fallback_locale = _get_fallback_locale(locale)
+    fallback_locale = None
+    if not getattr(settings, "TITLE_STRICT_LOCALE", True):
+        fallback_locale = _get_fallback_locale(locale)
+    # #region agent log
+    _dlog(
+        "render_title_locale",
+        {"variant_id": variant.id, "locale_id": locale.id, "locale_code": locale.code, "attr_value_ids_sample": attr_value_ids[:15], "pav_ids_sample": pav_ids[:15]},
+        "H1-H4",
+    )
+    # #endregion
     i18n_labels = _load_i18n_labels(attr_value_ids, locale, fallback_locale)
+    pav_i18n_texts = _load_pav_i18n_texts(pav_ids, locale, fallback_locale)
+    missing_av_ids = [aid for aid in attr_value_ids if aid not in i18n_labels]
+    missing_codes = {}
+    for pav in all_pavs:
+        if pav.attribute_value_id and pav.attribute_value_id in missing_av_ids:
+            missing_codes[pav.attribute_value_id] = {
+                "code": pav.attribute_value.code,
+                "attr_code": pav.attribute.code,
+                "attribute_id": pav.attribute_id,
+            }
+    # #region agent log
+    _dlog(
+        "i18n_after_load",
+        {
+            "variant_id": variant.id,
+            "locale_id": locale.id,
+            "locale_code": locale.code,
+            "i18n_labels_keys": list(i18n_labels.keys())[:20],
+            "pav_i18n_texts_keys": list(pav_i18n_texts.keys())[:20] if pav_i18n_texts else [],
+            "sample_av_in_labels": {aid: (aid in i18n_labels, i18n_labels.get(aid, "")[:30] if aid in i18n_labels else None) for aid in (attr_value_ids[:5])},
+        },
+        "H2-H4",
+    )
+    # #endregion
+    _dlog(
+        "title_i18n_loaded",
+        {
+            "variant_id": variant.id,
+            "locale": locale.code,
+            "attr_value_ids_count": len(attr_value_ids),
+            "pav_ids_count": len(pav_ids),
+            "i18n_labels_count": len(i18n_labels),
+            "pav_i18n_texts_count": len(pav_i18n_texts) if pav_i18n_texts else 0,
+            "missing_translations": missing_codes,
+        },
+        "translation_debug",
+    )
     synonym_rows = (
         AttributeValueSynonym.objects.filter(
             attribute_value_id__in=attr_value_ids,
@@ -223,6 +300,9 @@ def render_title(
     hook_source = ""
     head_keyword_id: Optional[int] = None
     hook_keyword_id: Optional[int] = None
+    # Track which attribute ids have already contributed axis-based values,
+    # so we can avoid duplicating them via ATTRIBUTE_VALUE parts.
+    axis_attribute_ids_used: Set[int] = set()
 
     for part in template_parts:
         resolved = ""
@@ -269,6 +349,7 @@ def render_title(
                     product_values=product_values,
                     i18n_labels=i18n_labels,
                     synonyms_map=synonyms_map,
+                    pav_i18n_texts=pav_i18n_texts,
                     rules=rules,
                 )
                 resolved = _normalize_label_text(head_term) if head_term else ""
@@ -286,6 +367,8 @@ def render_title(
             else:
                 resolved, hook_detail = _resolve_hook_term(
                     product=product,
+                    locale=locale,
+                    channel=channel,
                     run=run,
                     head_text=head_text,
                     include_descriptions=include_descriptions,
@@ -297,14 +380,45 @@ def render_title(
                 debug_entry.update(hook_detail)
         elif part.part_type == TemplatePart.PartType.AXIS_ATTRIBUTE:
             resolved, axis_details = _resolve_axis_attribute(
-                part.attribute, variant, variant_values, i18n_labels, synonyms_map, locale
+                part.attribute,
+                variant,
+                variant_values,
+                i18n_labels,
+                synonyms_map,
+                locale,
+                axes_override=axes_for_context,
+                pav_i18n_texts=pav_i18n_texts,
             )
             debug_entry["axis_values"] = axis_details
+            # Record which attributes were used so we can avoid duplicating them
+            # via ATTRIBUTE_VALUE parts later.
+            if part.attribute is not None:
+                axis_attribute_ids_used.add(part.attribute.id)
+            else:
+                # When no specific attribute is chosen, all axes for this context are used.
+                if axes_for_context is not None:
+                    for axis_info in axes_for_context:
+                        axis_attribute_ids_used.add(axis_info.attribute_id)
+                else:
+                    # Fallback to product-level axes
+                    for pav_attr_id in variant_values.keys():
+                        axis_attribute_ids_used.add(pav_attr_id)
         elif part.part_type == TemplatePart.PartType.ATTRIBUTE_VALUE:
-            resolved, value_detail = _resolve_attribute_value(
-                part.attribute, variant_values, product_values, i18n_labels, synonyms_map, locale
-            )
-            debug_entry.update(value_detail)
+            # Skip attribute_value parts that target an attribute already rendered as an axis
+            if part.attribute is not None and part.attribute.id in axis_attribute_ids_used:
+                resolved = ""
+                debug_entry["skipped_due_to_axis"] = True
+            else:
+                resolved, value_detail = _resolve_attribute_value(
+                    part.attribute,
+                    variant_values,
+                    product_values,
+                    i18n_labels,
+                    synonyms_map,
+                    locale,
+                    pav_i18n_texts=pav_i18n_texts,
+                )
+                debug_entry.update(value_detail)
         elif part.part_type == TemplatePart.PartType.BRAND:
             resolved = product.brand or ""
             debug_entry["source"] = "brand"
@@ -330,6 +444,7 @@ def render_title(
         hook_source=hook_source,
         head_keyword_id=head_keyword_id,
         hook_keyword_id=hook_keyword_id,
+        missing_translations=missing_codes if missing_codes else None,
     )
 
 
@@ -342,6 +457,8 @@ def save_generation(
     include_descriptions: bool = False,
     context: str = "title",
     mode_override: Optional[str] = None,
+    listing=None,
+    template_id: Optional[int] = None,
 ) -> GenerationOutput:
     planner_run = run
     policy = _get_title_generation_policy(
@@ -366,6 +483,8 @@ def save_generation(
             include_descriptions=include_descriptions,
             selection=None,
             rules=policy.rules,
+            listing=listing,
+            template_id=template_id,
         )
         draft = None
         if policy.auto_create_selection and preview.head_text:
@@ -399,13 +518,21 @@ def save_generation(
         include_descriptions=include_descriptions,
         selection=selection,
         rules=policy.rules,
+        listing=listing,
+        template_id=template_id,
     )
+    # #region agent log
+    _dlog("save_generation before _reserve_unique_title", {"variant_id": variant.id}, "H2")
+    # #endregion
     unique_title = _reserve_unique_title(
         title=result.title,
         variant=variant,
         locale=locale,
         channel=channel,
     )
+    # #region agent log
+    _dlog("save_generation after _reserve_unique_title", {"variant_id": variant.id}, "H2")
+    # #endregion
     selection_for_output = selection
     if not selection and policy.auto_create_selection and result.head_text:
         selection_status = TitleSelection.Status.DRAFT
@@ -427,6 +554,9 @@ def save_generation(
             hook_source=result.hook_source or "",
             hook_keyword_id=result.hook_keyword_id,
         )
+    # #region agent log
+    _dlog("save_generation before atomic block", {"variant_id": variant.id}, "H1")
+    # #endregion
     with transaction.atomic():
         generation_run = GenerationRun.objects.create(
             product=None,
@@ -436,6 +566,19 @@ def save_generation(
             channel=channel,
             template=result.template,
         )
+        # #region agent log
+        _dlog("save_generation after GenerationRun.create", {"variant_id": variant.id}, "H1")
+        # #endregion
+        # Defensive: only persist keyword FKs if the Keyword still exists
+        safe_head_keyword_id = result.head_keyword_id
+        safe_hook_keyword_id = result.hook_keyword_id
+        if safe_head_keyword_id is not None:
+            if not Keyword.objects.filter(id=safe_head_keyword_id).exists():
+                safe_head_keyword_id = None
+        if safe_hook_keyword_id is not None:
+            if not Keyword.objects.filter(id=safe_hook_keyword_id).exists():
+                safe_hook_keyword_id = None
+
         output = GenerationOutput.objects.create(
             run=generation_run,
             field="title",
@@ -446,8 +589,8 @@ def save_generation(
             hook_text=result.hook_text or "",
             head_source=result.head_source or "",
             hook_source=result.hook_source or "",
-            head_keyword_id=result.head_keyword_id,
-            hook_keyword_id=result.hook_keyword_id,
+            head_keyword_id=safe_head_keyword_id,
+            hook_keyword_id=safe_hook_keyword_id,
             score_json={
                 "title": unique_title,
                 "template_id": result.template.id,
@@ -457,8 +600,8 @@ def save_generation(
                 "hook_text": result.hook_text,
                 "head_source": result.head_source,
                 "hook_source": result.hook_source,
-                "head_keyword_id": result.head_keyword_id,
-                "hook_keyword_id": result.hook_keyword_id,
+                "head_keyword_id": safe_head_keyword_id,
+                "hook_keyword_id": safe_hook_keyword_id,
                 "selection_id": selection_for_output.id if selection_for_output else None,
                 "candidate_ids": result.candidate_ids,
                 "planner_run_id": planner_run.id if planner_run else None,
@@ -469,7 +612,10 @@ def save_generation(
                 "product_id": variant.product_id,
             },
         )
-    return output
+    # #region agent log
+    _dlog("save_generation after GenerationOutput.create", {"variant_id": variant.id}, "H1")
+    # #endregion
+    return output, getattr(result, "missing_translations", None)
 
 
 def _reserve_unique_title(
@@ -481,7 +627,14 @@ def _reserve_unique_title(
 ) -> str:
     base_title = title or ""
     sku = variant.sku or variant.internal_sku or str(variant.id)
-    suffix = re.sub(r"[^A-Za-z0-9]+", "", sku)[-4:] or sku[-4:] or str(variant.id)
+    # Prefer last segment of SKU when split by hyphen (e.g. "EXC", "LIN") so suffix is readable
+    parts = re.split(r"[-_\s]+", sku)
+    last_part = parts[-1].strip() if parts else ""
+    if 2 <= len(last_part) <= 20 and re.match(r"^[A-Za-z0-9]+$", last_part):
+        suffix = last_part
+    else:
+        alnum_only = re.sub(r"[^A-Za-z0-9]+", "", sku)
+        suffix = alnum_only[-4:] if len(alnum_only) >= 4 else (alnum_only or str(variant.id))
     candidates = [base_title]
     if base_title:
         candidates.append(f"{base_title} {suffix}")
@@ -492,6 +645,9 @@ def _reserve_unique_title(
 
     product_type = variant.product.product_type
     scope = UniqueTitle.Scope.VARIANT
+    # #region agent log
+    _dlog("_reserve_unique_title before atomic", {"variant_id": variant.id}, "H2")
+    # #endregion
     with transaction.atomic():
         UniqueTitle.objects.filter(
             variant=variant,
@@ -504,17 +660,21 @@ def _reserve_unique_title(
             normalized = _normalize_term_for_match(candidate)
             if not normalized:
                 continue
+            # Nested atomic so IntegrityError only rolls back this create; we must not
+            # run further queries in the outer atomic after an exception (Django
+            # TransactionManagementError).
             try:
-                UniqueTitle.objects.create(
-                    product_type=product_type,
-                    locale=locale,
-                    channel=channel,
-                    scope=scope,
-                    normalized_title=normalized,
-                    raw_title=candidate,
-                    variant=variant,
-                    product=None,
-                )
+                with transaction.atomic():
+                    UniqueTitle.objects.create(
+                        product_type=product_type,
+                        locale=locale,
+                        channel=channel,
+                        scope=scope,
+                        normalized_title=normalized,
+                        raw_title=candidate,
+                        variant=variant,
+                        product=None,
+                    )
             except IntegrityError:
                 continue
             return candidate
@@ -696,12 +856,32 @@ def _resolve_keyword(
 def _resolve_hook_term(
     *,
     product,
+    locale: Locale,
+    channel: Channel,
     run: Optional[PlannerRun],
     head_text: str,
     include_descriptions: bool,
     rules: Optional[Dict[str, object]] = None,
 ) -> Tuple[str, dict]:
     rules = _merge_rules(rules)
+
+    # Prefer stored hook terms for this product (group of variants) / locale / channel
+    hook_terms_qs = (
+        ProductHookTerm.objects.filter(product=product, locale=locale)
+        .filter(Q(channel=channel) | Q(channel__isnull=True))
+        .annotate(_channel_match=Case(When(channel=channel, then=Value(1)), default=Value(0), output_field=IntegerField()))
+        .order_by("-_channel_match", "-priority", "id")
+    )
+    for hook_row in hook_terms_qs[:10]:
+        hook = _normalize_label_text(hook_row.term)
+        if rules.get("hook_strip_head_tokens", True):
+            hook = _strip_head_tokens(hook, head_text, product=product, locale=locale, channel=channel)
+        max_words = rules.get("hook_max_words")
+        if isinstance(max_words, int) and max_words > 0:
+            hook = " ".join(hook.split()[:max_words]).strip()
+        if hook:
+            return hook, {"source": "product_hook_term", "product_hook_term_id": hook_row.id}
+
     if not run:
         return "", {}
 
@@ -762,7 +942,7 @@ def _resolve_hook_term(
             if head_norm == hook_norm or head_norm in hook_norm or hook_norm in head_norm:
                 continue
         if rules.get("hook_strip_head_tokens", True):
-            hook = _strip_head_tokens(hook, head_text)
+            hook = _strip_head_tokens(hook, head_text, product=product, locale=locale, channel=channel)
         if not hook:
             continue
         max_words = rules.get("hook_max_words")
@@ -793,6 +973,7 @@ def _resolve_head_term(
     product_values: Dict[int, ProductAttributeValue],
     i18n_labels: Dict[int, str],
     synonyms_map: Dict[int, List[str]],
+    pav_i18n_texts: Optional[Dict[int, str]] = None,
     rules: Optional[Dict[str, object]] = None,
 ) -> Tuple[str, dict]:
     rules = _merge_rules(rules)
@@ -820,7 +1001,12 @@ def _resolve_head_term(
             pav = _find_product_category_pav(variant_values, product_values)
             if pav:
                 head, _src, _ = _stringify_attribute_value(
-                    pav, i18n_labels, synonyms_map, locale, include_source=True
+                    pav,
+                    i18n_labels,
+                    synonyms_map,
+                    locale,
+                    include_source=True,
+                    pav_i18n_texts=pav_i18n_texts,
                 )
                 head = _normalize_label_text(head)
                 if head:
@@ -855,12 +1041,38 @@ def _find_product_category_pav(
     return None
 
 
-def _strip_head_tokens(hook: str, head: str) -> str:
-    hook_norm = _normalize_term_for_match(hook)
-    head_norm = _normalize_term_for_match(head)
-    if not hook_norm or not head_norm:
+def _strip_head_tokens(
+    hook: str,
+    head: str,
+    *,
+    product=None,
+    locale: Optional[Locale] = None,
+    channel=None,
+) -> str:
+    """Remove from hook any token that matches the head or any approved head term for the product type."""
+    head_tokens = set()
+    if head:
+        head_norm = _normalize_term_for_match(head)
+        if head_norm:
+            head_tokens.update(head_norm.split())
+    if product and locale and channel:
+        synonym_terms = (
+            ProductTypeSynonym.objects.filter(
+                product_type=product.product_type,
+                locale=locale,
+                status=SynonymStatus.APPROVED,
+                is_active=True,
+            )
+            .filter(Q(channel=channel) | Q(channel__isnull=True))
+            .values_list("term", flat=True)
+        )
+        for term in synonym_terms:
+            if term:
+                norm = _normalize_term_for_match(term)
+                if norm:
+                    head_tokens.update(norm.split())
+    if not head_tokens:
         return hook
-    head_tokens = set(head_norm.split())
     orig_tokens = hook.split()
     kept = [tok for tok in orig_tokens if _normalize_term_for_match(tok) not in head_tokens]
     return " ".join(kept) if kept else hook
@@ -1098,10 +1310,53 @@ def _resolve_axis_attribute(
     i18n_labels: Dict[int, str],
     synonyms_map: Dict[int, List[str]],
     locale: Locale,
+    axes_override: Optional[List[AxisInfo]] = None,
+    pav_i18n_texts: Optional[Dict[int, str]] = None,
 ) -> tuple[str, List[dict]]:
-    if attribute and attribute.id not in variant_values:
+    if attribute and attribute.id not in variant_values and not axes_override:
         return "", []
 
+    if axes_override is not None:
+        # Use listing/channel axes (e.g. color, size from listing Axes tab)
+        resolved_values = []
+        axis_details = []
+        for axis_info in axes_override:
+            if attribute and axis_info.attribute_id != attribute.id:
+                continue
+            pav = variant_values.get(axis_info.attribute_id)
+            label, source, synonym_used = _stringify_attribute_value(
+                pav,
+                i18n_labels,
+                synonyms_map,
+                locale,
+                include_source=True,
+                pav_i18n_texts=pav_i18n_texts,
+            )
+            axis_details.append(
+                {
+                    "attribute": axis_info.attribute_code,
+                    "value": label,
+                    "source": source,
+                    "synonym": synonym_used,
+                }
+            )
+            if label:
+                resolved_values.append(label)
+        # #region agent log
+        _dlog(
+            "axis_attribute_resolved_values",
+            {
+                "variant_id": variant.id,
+                "attribute": attribute.code if attribute else None,
+                "resolved_values": resolved_values,
+                "axis_details": axis_details,
+            },
+            "H1-size-axes",
+        )
+        # #endregion
+        return " ".join(resolved_values), axis_details
+
+    # Fallback: product-level axes only (ProductVariantAxis)
     axis_attributes = (
         ProductVariantAxis.objects.filter(product=variant.product)
         .select_related("attribute")
@@ -1114,7 +1369,12 @@ def _resolve_axis_attribute(
             continue
         pav = variant_values.get(axis.attribute_id)
         label, source, synonym_used = _stringify_attribute_value(
-            pav, i18n_labels, synonyms_map, locale, include_source=True
+            pav,
+            i18n_labels,
+            synonyms_map,
+            locale,
+            include_source=True,
+            pav_i18n_texts=pav_i18n_texts,
         )
         axis_details.append(
             {
@@ -1126,6 +1386,18 @@ def _resolve_axis_attribute(
         )
         if label:
             resolved_values.append(label)
+        # #region agent log
+        _dlog(
+            "axis_attribute_resolved_values_fallback",
+            {
+                "variant_id": variant.id,
+                "attribute": attribute.code if attribute else None,
+                "resolved_values": resolved_values,
+                "axis_details": axis_details,
+            },
+            "H1-size-axes",
+        )
+        # #endregion
     return " ".join(resolved_values), axis_details
 
 
@@ -1136,11 +1408,19 @@ def _resolve_attribute_value(
     i18n_labels: Dict[int, str],
     synonyms_map: Dict[int, List[str]],
     locale: Locale,
+    pav_i18n_texts: Optional[Dict[int, str]] = None,
 ) -> tuple[str, dict]:
     if not attribute:
         return "", {}
     pav = variant_values.get(attribute.id) or product_values.get(attribute.id)
-    value, source, synonym_used = _stringify_attribute_value(pav, i18n_labels, synonyms_map, locale, include_source=True)
+    value, source, synonym_used = _stringify_attribute_value(
+        pav,
+        i18n_labels,
+        synonyms_map,
+        locale,
+        include_source=True,
+        pav_i18n_texts=pav_i18n_texts,
+    )
     detail = {"source": source}
     if synonym_used:
         detail["synonym"] = synonym_used
@@ -1153,6 +1433,7 @@ def _stringify_attribute_value(
     synonyms_map: Dict[int, List[str]],
     locale: Locale,
     include_source: bool = False,
+    pav_i18n_texts: Optional[Dict[int, str]] = None,
 ) -> tuple[str, Optional[str], Optional[str]] | str:
     source = None
     synonym_used = None
@@ -1161,17 +1442,68 @@ def _stringify_attribute_value(
 
     if pav.attribute.data_type == Attribute.DataType.ENUM and pav.attribute_value_id:
         synonyms = synonyms_map.get(pav.attribute_value_id) or []
+        # Prefer per-product translated value (ProductAttributeValueI18n) if present
+        # #region agent log
+        _dlog(
+            "stringify_enum_check",
+            {
+                "pav_id": pav.id,
+                "attribute_value_id": pav.attribute_value_id,
+                "attr_code": pav.attribute.code,
+                "locale_code": locale.code,
+                "pav_in_pav_i18n": bool(pav_i18n_texts and pav.id in pav_i18n_texts),
+                "av_id_in_i18n_labels": pav.attribute_value_id in i18n_labels if i18n_labels else False,
+                "raw_code": pav.attribute_value.code if pav.attribute_value else None,
+            },
+            "H2-H5",
+        )
+        # #endregion
+        if pav_i18n_texts and pav.id in pav_i18n_texts and pav_i18n_texts[pav.id]:
+            label = pav_i18n_texts[pav.id]
+            source = "enum_pav_i18n"
+            return (label, source, synonym_used) if include_source else label
         if synonyms:
             synonym_used = synonyms[0]
             source = "synonym"
             return (synonym_used, source, synonym_used) if include_source else synonym_used
         label = i18n_labels.get(pav.attribute_value_id) or pav.attribute_value.code
         source = "enum_i18n" if pav.attribute_value_id in i18n_labels else "enum_code"
+        if source == "enum_code":
+            _dlog(
+                "title_attr_using_raw",
+                {
+                    "attr_code": pav.attribute.code,
+                    "attribute_value_id": pav.attribute_value_id,
+                    "raw_code": pav.attribute_value.code,
+                    "locale": locale.code,
+                    "reason": "no AttributeValueI18n for this attribute_value_id + locale",
+                },
+                "translation_debug",
+            )
         return (label, source, synonym_used) if include_source else label
 
+    # Prefer translated label for any attribute_value (e.g. reference/code) when we have i18n
     if pav.attribute_value and pav.attribute_value.code:
-        source = "value_code"
-        return (pav.attribute_value.code, source, synonym_used) if include_source else pav.attribute_value.code
+        label = i18n_labels.get(pav.attribute_value_id) or pav.attribute_value.code
+        source = "value_i18n" if pav.attribute_value_id and pav.attribute_value_id in i18n_labels else "value_code"
+        if source == "value_code":
+            _dlog(
+                "title_attr_using_raw",
+                {
+                    "attr_code": pav.attribute.code,
+                    "attribute_value_id": pav.attribute_value_id,
+                    "raw_code": pav.attribute_value.code,
+                    "locale": locale.code,
+                    "reason": "no AttributeValueI18n for this attribute_value_id + locale",
+                },
+                "translation_debug",
+            )
+        return (label, source, synonym_used) if include_source else label
+
+    # For free-text/numeric etc., prefer ProductAttributeValueI18n when available
+    if pav_i18n_texts and pav.id in pav_i18n_texts and pav_i18n_texts[pav.id]:
+        source = "value_i18n"
+        return (pav_i18n_texts[pav.id], source, synonym_used) if include_source else pav_i18n_texts[pav.id]
 
     for value in (pav.value_text, pav.value_number, pav.value_bool, pav.value_json):
         if value not in (None, ""):
@@ -1185,6 +1517,17 @@ def _stringify_attribute_value(
                 text = str(value)
             text_with_unit = f"{text} {pav.unit}".strip() if pav.unit else text
             source = "value"
+            _dlog(
+                "title_attr_using_raw",
+                {
+                    "attr_code": pav.attribute.code,
+                    "pav_id": pav.id,
+                    "raw_value": text[:80] if text else None,
+                    "locale": locale.code,
+                    "reason": "no ProductAttributeValueI18n for this PAV + locale; using pav.value_text/value_number",
+                },
+                "translation_debug",
+            )
             return (text_with_unit, source, synonym_used) if include_source else text_with_unit
     return ("", source, synonym_used) if include_source else ""
 
@@ -1300,6 +1643,8 @@ def get_title_suggestions(
     )
     hook_suggestions = _build_hook_suggestions(
         product=product,
+        locale=locale,
+        channel=channel,
         run=run,
         head_text=head_text,
         include_descriptions=include_descriptions,
@@ -1572,14 +1917,41 @@ def _product_type_metric_candidates(
 def _build_hook_suggestions(
     *,
     product,
+    locale: Locale,
+    channel: Channel,
     run: Optional[PlannerRun],
     head_text: str,
     include_descriptions: bool,
     rules: Dict[str, object],
     limit: int,
 ) -> List[dict]:
+    suggestions: List[dict] = []
+    seen: set = set()
+    head_norm = _normalize_term_for_match(head_text)
+    max_words = rules.get("hook_max_words") if isinstance(rules, dict) else None
+
+    # Prepend stored product hook terms (for this product / locale / channel)
+    hook_terms_qs = (
+        ProductHookTerm.objects.filter(product=product, locale=locale)
+        .filter(Q(channel=channel) | Q(channel__isnull=True))
+        .annotate(_channel_match=Case(When(channel=channel, then=Value(1)), default=Value(0), output_field=IntegerField()))
+        .order_by("-_channel_match", "-priority", "id")[:limit]
+    )
+    for hook_row in hook_terms_qs:
+        if len(suggestions) >= limit:
+            break
+        hook = _normalize_label_text(hook_row.term)
+        if rules.get("hook_strip_head_tokens", True):
+            hook = _strip_head_tokens(hook, head_text, product=product, locale=locale, channel=channel)
+        if isinstance(max_words, int) and max_words > 0:
+            hook = " ".join(hook.split()[:max_words]).strip()
+        if hook and _add_suggestion(seen, suggestions, hook, {"source": "product_hook_term", "product_hook_term_id": hook_row.id}):
+            pass
+
+    if len(suggestions) >= limit:
+        return suggestions[:limit]
     if not run or limit <= 0:
-        return []
+        return suggestions[:limit]
     metric_qs = (
         Metric.objects.filter(keyword_id=OuterRef("keyword_id"), planner_run=run)
         .order_by("-month")
@@ -1627,10 +1999,6 @@ def _build_hook_suggestions(
         "keyword_id",
         "id",
     )
-    suggestions: List[dict] = []
-    seen = set()
-    head_norm = _normalize_term_for_match(head_text)
-    max_words = rules.get("hook_max_words")
     for row in ordered.iterator():
         if len(suggestions) >= limit:
             break
@@ -1640,7 +2008,7 @@ def _build_hook_suggestions(
             if head_norm == hook_norm or head_norm in hook_norm or hook_norm in head_norm:
                 continue
         if rules.get("hook_strip_head_tokens", True):
-            hook = _strip_head_tokens(hook, head_text)
+            hook = _strip_head_tokens(hook, head_text, product=product, locale=locale, channel=channel)
         if isinstance(max_words, int) and max_words > 0:
             hook = " ".join(hook.split()[:max_words]).strip()
         if not hook:
@@ -1840,12 +2208,17 @@ def _load_i18n_labels(
     if not attribute_value_ids:
         return {}
 
-    labels: Dict[int, str] = {
-        row["attribute_value_id"]: row["label"]
-        for row in AttributeValueI18n.objects.filter(
-            attribute_value_id__in=attribute_value_ids, locale=locale
-        ).values("attribute_value_id", "label")
-    }
+    rows = list(AttributeValueI18n.objects.filter(
+        attribute_value_id__in=attribute_value_ids, locale=locale
+    ).values("attribute_value_id", "label"))
+    # #region agent log
+    _dlog(
+        "load_i18n_labels_query",
+        {"locale_id": locale.id, "locale_code": locale.code, "queried_av_ids": attribute_value_ids[:15], "rows_returned": len(rows), "returned_av_ids": [r["attribute_value_id"] for r in rows[:15]]},
+        "H4",
+    )
+    # #endregion
+    labels: Dict[int, str] = {row["attribute_value_id"]: row["label"] for row in rows}
 
     if fallback_locale and fallback_locale != locale:
         missing_ids = [aid for aid in attribute_value_ids if aid not in labels]
@@ -1856,7 +2229,63 @@ def _load_i18n_labels(
             for row in fallback_rows:
                 labels.setdefault(row["attribute_value_id"], row["label"])
 
+    # When AttributeValueI18n is empty (e.g. backfill not run), use any ProductAttributeValueI18n
+    # for this attribute_value_id + locale so existing PAV translations are used in titles.
+    missing_av_ids = [aid for aid in attribute_value_ids if aid not in labels]
+    if missing_av_ids:
+        pav_based = _load_i18n_labels_from_pav(missing_av_ids, locale)
+        for av_id, label in pav_based.items():
+            labels.setdefault(av_id, label)
+
     return labels
+
+
+def _load_i18n_labels_from_pav(
+    attribute_value_ids: List[int],
+    locale: Locale,
+) -> Dict[int, str]:
+    """Load attribute_value_id -> label from ProductAttributeValueI18n (any PAV with that attribute_value_id).
+    Used when AttributeValueI18n has no row so existing PAV translations still apply in titles."""
+    if not attribute_value_ids:
+        return {}
+    out: Dict[int, str] = {}
+    for i18n in ProductAttributeValueI18n.objects.filter(
+        product_attribute_value__attribute_value_id__in=attribute_value_ids,
+        locale=locale,
+    ).select_related("product_attribute_value"):
+        av_id = i18n.product_attribute_value.attribute_value_id
+        text = (i18n.value_text or "").strip()
+        if av_id and text and av_id not in out:
+            out[av_id] = text
+    return out
+
+
+def _load_pav_i18n_texts(
+    product_attribute_value_ids: List[int],
+    locale: Locale,
+    fallback_locale: Optional[Locale] = None,
+) -> Dict[int, str]:
+    """Load translated value_text for ProductAttributeValue (free-text attributes) per locale."""
+    if not product_attribute_value_ids:
+        return {}
+    texts: Dict[int, str] = {
+        row["product_attribute_value_id"]: (row["value_text"] or "").strip()
+        for row in ProductAttributeValueI18n.objects.filter(
+            product_attribute_value_id__in=product_attribute_value_ids,
+            locale=locale,
+        ).values("product_attribute_value_id", "value_text")
+        if (row.get("value_text") or "").strip()
+    }
+    if fallback_locale and fallback_locale != locale:
+        missing_ids = [pid for pid in product_attribute_value_ids if pid not in texts]
+        if missing_ids:
+            for row in ProductAttributeValueI18n.objects.filter(
+                product_attribute_value_id__in=missing_ids,
+                locale=fallback_locale,
+            ).values("product_attribute_value_id", "value_text"):
+                if (row.get("value_text") or "").strip():
+                    texts.setdefault(row["product_attribute_value_id"], (row["value_text"] or "").strip())
+    return texts
 
 
 def _collect_attr_value_ids(

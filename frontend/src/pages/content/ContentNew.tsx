@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useMutation } from '@tanstack/react-query';
-import { ArrowRight, Sparkles, Loader2, Eye } from 'lucide-react';
+import { ArrowRight, Sparkles, Loader2, Eye, FileText } from 'lucide-react';
 import { PageHeader } from '@/components/PageHeader';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { generateTitles, generateContent, previewContent } from '@/lib/api';
+import { generateContent, previewContent } from '@/lib/api';
 
 export default function ContentNew() {
   const navigate = useNavigate();
@@ -17,13 +17,6 @@ export default function ContentNew() {
   const [template, setTemplate] = useState('');
   const [previewVariantId, setPreviewVariantId] = useState('');
   const [previewResult, setPreviewResult] = useState('');
-
-  const titleMutation = useMutation({
-    mutationFn: generateTitles,
-    onSuccess: () => {
-      navigate('/content');
-    },
-  });
 
   const contentMutation = useMutation({
     mutationFn: generateContent,
@@ -46,13 +39,6 @@ export default function ContentNew() {
       .filter(Boolean)
       .map((s) => parseInt(s, 10))
       .filter((n) => !isNaN(n));
-  };
-
-  const handleGenerateTitles = () => {
-    const ids = parseVariantIds();
-    if (ids.length > 0) {
-      titleMutation.mutate({ variant_ids: ids, template: template || undefined });
-    }
   };
 
   const handleGenerateContent = () => {
@@ -124,14 +110,14 @@ export default function ContentNew() {
 
                 <div className="flex flex-col sm:flex-row gap-3">
                   <Button
-                    onClick={handleGenerateTitles}
-                    disabled={!variantIds.trim() || titleMutation.isPending}
+                    variant="outline"
                     className="flex-1"
+                    asChild
                   >
-                    {titleMutation.isPending && (
-                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    )}
-                    Generate Titles
+                    <Link to="/content/generate-titles">
+                      <FileText className="w-4 h-4 mr-2" />
+                      Generate titles (channel & locale)
+                    </Link>
                   </Button>
                   <Button
                     onClick={handleGenerateContent}

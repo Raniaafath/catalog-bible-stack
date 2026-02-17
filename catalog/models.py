@@ -28,6 +28,20 @@ class ProductType(models.Model):
 
 
 class Product(models.Model):
+    """
+    Product (product family): catalog-level group of variants. One product family
+    has many variants; grouping is independent of marketplaces.
+    See GROUPING_AND_MARKETPLACE_AXES.md for product family vs listing group.
+
+    Product-level fields (shared across variants):
+    - code (unique identifier for the group)
+    - default_label (general title for the group)
+    - brand, model, series (shared attributes)
+    - Variation axes (stored in ProductVariantAxis)
+    
+    Note: Source fields (source_title, source_description, etc.) are on Variant,
+    not Product, since each variant may have different source data.
+    """
     class Status(models.TextChoices):
         DRAFT = "draft", "Draft"
         ACTIVE = "active", "Active"
@@ -44,11 +58,7 @@ class Product(models.Model):
     default_label = models.CharField(max_length=200, blank=True)
     brand = models.CharField(max_length=255, null=True, blank=True)
     model = models.CharField(max_length=255, null=True, blank=True)
-    source_title = models.TextField(blank=True, default="")
-    source_description = models.TextField(blank=True, default="")
-    source_locale = models.CharField(max_length=15, blank=True, default="")
-    source_supplier = models.CharField(max_length=100, blank=True, default="")
-    source_sku = models.CharField(max_length=150, blank=True, default="")
+    # Note: source_* fields moved to Variant (variant-specific data)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -60,6 +70,13 @@ class Product(models.Model):
 
 
 class Variant(models.Model):
+    """
+    Variant: individual sellable item/SKU. Each variant belongs to one Product
+    (product family) in the catalog.
+    
+    Variant-specific fields (from import/supplier):
+    - source_title, source_description, source_sku, source_supplier, source_locale
+    """
     product = models.ForeignKey(
         Product,
         on_delete=models.CASCADE,
@@ -70,6 +87,12 @@ class Variant(models.Model):
     internal_sku = models.TextField(default=uuid.uuid4, unique=True)
     sku = models.CharField(max_length=100, unique=True, null=True, blank=True)
     axis_signature = models.TextField(null=True, blank=True)
+    # Source fields (from import/supplier) - variant-specific
+    source_title = models.TextField(blank=True, default="")
+    source_description = models.TextField(blank=True, default="")
+    source_locale = models.CharField(max_length=15, blank=True, default="")
+    source_supplier = models.CharField(max_length=100, blank=True, default="")
+    source_sku = models.CharField(max_length=150, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -235,6 +258,10 @@ class ProductAttributeValue(models.Model):
 
 
 class ProductVariantAxis(models.Model):
+    """
+    Product family default variation axes. Used when no channel or listing group
+    axes are defined (see GROUPING_AND_MARKETPLACE_AXES.md for resolution order).
+    """
     product = models.ForeignKey(
         Product,
         on_delete=models.CASCADE,
@@ -261,6 +288,105 @@ class ProductVariantAxis(models.Model):
 
     def __str__(self) -> str:
         return f"{self.product} - {self.attribute}"
+
+
+class ChannelVariantAxis(models.Model):
+    """
+    Marketplace/channel-specific variation axes for a product.
+    
+    Allows different variation axes per marketplace:
+    - Shopify might use: color, size
+    - eBay might use: color, size, material
+    - Amazon might use: size only
+    
+    Used for title generation: when generating titles for a specific
+    locale + marketplace, use these axes to build variant-specific titles.
+    """
+    product = models.ForeignKey(
+        Product,
+        on_delete=models.CASCADE,
+        related_name="channel_variant_axes",
+    )
+    channel = models.ForeignKey(
+        "pub.Channel",
+        on_delete=models.CASCADE,
+        related_name="variant_axes",
+    )
+    attribute = models.ForeignKey(
+        Attribute,
+        on_delete=models.PROTECT,
+        related_name="channel_variant_axes",
+    )
+    position = models.IntegerField(default=0)
+    label_override = models.TextField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["product", "channel", "attribute"],
+                name="uniq_channel_variant_axis",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["product", "channel", "position"], name="idx_channel_axis_position"),
+            models.Index(fields=["channel"], name="idx_channel_axis_channel"),
+        ]
+        ordering = ["product", "channel", "position"]
+
+    def __str__(self) -> str:
+        return f"{self.product.code} @ {self.channel.code} - {self.attribute.code}"
+
+
+class ChannelListingAxis(models.Model):
+    """
+    Variation axes for a specific listing group (ChannelListing). Highest
+    priority in axis resolution (listing group > channel > product family).
+    Multiple listing groups per product+channel can have different axes.
+    
+    Example:
+    - Product "BIKE-001" on eBay could have:
+      * Listing 1: axes = [color] (only color variations)
+      * Listing 2: axes = [size] (only size variations)
+    
+    Resolution priority (for title generation):
+    1. ChannelListingAxis (listing-specific) ← Highest priority
+    2. ChannelVariantAxis (product+channel) ← Fallback
+    3. ProductVariantAxis (global/default) ← Last resort
+    """
+    listing = models.ForeignKey(
+        "pub.ChannelListing",
+        on_delete=models.CASCADE,
+        related_name="listing_axes",
+    )
+    attribute = models.ForeignKey(
+        Attribute,
+        on_delete=models.PROTECT,
+        related_name="channel_listing_axes",
+    )
+    position = models.IntegerField(default=0)
+    label_override = models.TextField(null=True, blank=True)
+    enabled = models.BooleanField(
+        default=True,
+        help_text="Whether this axis is enabled for this listing",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["listing", "attribute"],
+                name="uniq_channel_listing_axis",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["listing", "position"], name="idx_listing_axis_position"),
+            models.Index(fields=["listing", "enabled"], name="idx_listing_axis_enabled"),
+        ]
+        ordering = ["listing", "position"]
+
+    def __str__(self) -> str:
+        return f"{self.listing} - {self.attribute.code}"
 
 
 class BundleComponent(models.Model):

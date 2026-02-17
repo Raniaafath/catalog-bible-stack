@@ -8,15 +8,19 @@ const statusBadgeVariants = cva(
     variants: {
       status: {
         pending: 'bg-status-pending-bg text-status-pending-foreground',
+        uploaded: 'bg-status-pending-bg text-status-pending-foreground',
         processing: 'bg-status-processing-bg text-status-processing-foreground',
+        parsed: 'bg-status-processing-bg text-status-processing-foreground',
         in_progress: 'bg-status-processing-bg text-status-processing-foreground',
         running: 'bg-status-processing-bg text-status-processing-foreground',
         completed: 'bg-status-completed-bg text-status-completed-foreground',
+        committed: 'bg-status-completed-bg text-status-completed-foreground',
         approved: 'bg-status-success-bg text-status-success-foreground',
         success: 'bg-status-success-bg text-status-success-foreground',
         failed: 'bg-status-error-bg text-status-error-foreground',
         error: 'bg-status-error-bg text-status-error-foreground',
         awaiting_mapping: 'bg-status-warning-bg text-status-warning-foreground',
+        mapped: 'bg-status-warning-bg text-status-warning-foreground',
         warning: 'bg-status-warning-bg text-status-warning-foreground',
       },
       size: {
@@ -34,29 +38,37 @@ const statusBadgeVariants = cva(
 
 const statusIcons = {
   pending: Clock,
+  uploaded: Clock,
   processing: Loader2,
+  parsed: Loader2,
   in_progress: Loader2,
   running: Loader2,
   completed: CheckCircle2,
+  committed: CheckCircle2,
   approved: CheckCircle2,
   success: CheckCircle2,
   failed: XCircle,
   error: XCircle,
   awaiting_mapping: AlertCircle,
+  mapped: AlertCircle,
   warning: AlertCircle,
 };
 
 const statusLabels: Record<string, string> = {
   pending: 'Pending',
+  uploaded: 'Uploaded',
   processing: 'Processing',
+  parsed: 'Parsed',
   in_progress: 'In Progress',
   running: 'Running',
   completed: 'Completed',
+  committed: 'Committed',
   approved: 'Approved',
   success: 'Success',
   failed: 'Failed',
   error: 'Error',
   awaiting_mapping: 'Awaiting Mapping',
+  mapped: 'Mapped',
   warning: 'Warning',
 };
 
@@ -76,7 +88,7 @@ export function StatusBadge({
 }: StatusBadgeProps) {
   const Icon = statusIcons[status] || PauseCircle;
   const displayLabel = label || statusLabels[status] || status;
-  const isAnimated = ['processing', 'in_progress', 'running'].includes(status);
+  const isAnimated = ['processing', 'parsed', 'in_progress', 'running'].includes(status);
 
   return (
     <span className={cn(statusBadgeVariants({ status, size }), className)}>

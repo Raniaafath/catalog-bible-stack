@@ -4,6 +4,8 @@ from rest_framework.response import Response
 
 
 class IntegrityErrorTo409Mixin:
+    """Mixin to convert IntegrityError exceptions to 409 Conflict responses."""
+    
     def create(self, request, *args, **kwargs):
         try:
             return super().create(request, *args, **kwargs)

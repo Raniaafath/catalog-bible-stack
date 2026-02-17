@@ -1,6 +1,42 @@
 import axios, { AxiosError, AxiosRequestConfig } from 'axios';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
+
+/** Shape of typical DRF validation error response */
+export interface ApiErrorData {
+  detail?: string | string[];
+  non_field_errors?: string[];
+  /** JSON 500 from our views (e.g. persist-mappings) */
+  error?: string;
+  [field: string]: string[] | string | undefined;
+}
+
+/**
+ * Get a single user-friendly message from an API error response.
+ * Handles error (our JSON 500), detail, non_field_errors, and per-field errors (e.g. from DRF serializers).
+ */
+export function getApiErrorMessage(error: unknown): string {
+  if (error && typeof error === 'object' && 'response' in error) {
+    const axiosError = error as AxiosError<ApiErrorData>;
+    const data = axiosError.response?.data;
+    if (data && typeof data === 'object' && !Array.isArray(data)) {
+      if (typeof data.error === 'string') return data.error;
+      if (typeof data.detail === 'string') return data.detail;
+      if (Array.isArray(data.detail) && data.detail.length) return data.detail.join('. ');
+      if (Array.isArray(data.non_field_errors) && data.non_field_errors.length)
+        return data.non_field_errors.join('. ');
+      const fieldMessages = Object.entries(data)
+        .filter(([k]) => k !== 'detail' && k !== 'error' && Array.isArray(data[k]))
+        .map(([field, msgs]) => `${field}: ${(msgs as string[]).join(', ')}`);
+      if (fieldMessages.length) return fieldMessages.join('. ');
+    }
+    const dataStr = typeof data === 'string' ? data : null;
+    if (dataStr !== null && dataStr.length < 500) return dataStr;
+    if (dataStr !== null) return `Server error (HTML or long response). Check Network tab for response body.`;
+  }
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
 export const AUTH_TOKEN_KEY = 'authToken';
 
 export const apiClient = axios.create({
@@ -154,7 +190,7 @@ export interface Product {
   brand: string | null;
   model: string | null;
   default_label: string;
-  // Note: source_* fields are on Variant, not Product
+  variant_count?: number;
 }
 
 export interface Variant {
@@ -395,6 +431,7 @@ export interface ChannelListing {
   id: number;
   product_id: number;
   product_code?: string;
+  product_type_id?: number | null;
   channel_id: number;
   channel_code?: string;
   locale_id: number | null;
@@ -406,6 +443,16 @@ export interface ChannelListing {
   updated_at: string;
 }
 
+/** Axis from API: listing-specific axes have id/enabled; resolved axes (channel/product fallback) may omit them */
+export interface ChannelListingAxisItem {
+  id?: number;
+  attribute_id: number;
+  attribute_code: string;
+  position: number;
+  label_override?: string | null;
+  enabled?: boolean;
+}
+
 export interface ChannelListingDetail extends ChannelListing {
   variants: Array<{
     id: number;
@@ -414,14 +461,7 @@ export interface ChannelListingDetail extends ChannelListing {
     external_id: string;
     sync_status: string;
   }>;
-  axes: Array<{
-    id: number;
-    attribute_id: number;
-    attribute_code: string;
-    position: number;
-    label_override: string | null;
-    enabled: boolean;
-  }>;
+  axes: ChannelListingAxisItem[];
 }
 
 export interface ChannelListingCreate {
@@ -663,14 +703,43 @@ export const getProducts = (params?: PaginationParams) =>
 export const createProduct = (data: ProductCreate) =>
   postData<Product, ProductCreate>('/products/', data);
 
+export const deleteProduct = (id: number) =>
+  apiClient.delete(`/products/${id}/`).then((res) => res.data);
+
 export const createVariant = (data: VariantCreate) =>
   postData<Variant, VariantCreate>('/variants/', data);
+
+export const createVariantForProduct = (productId: number, data: Omit<VariantCreate, 'product_id'>) =>
+  postData<Variant>(`/products/${productId}/variants/`, data);
 
 export const getVariants = (params?: PaginationParams) =>
   fetchPaginated<Variant>('/variants/', params);
 
+export const getProductVariants = (productId: number) =>
+  fetchOne<Variant[]>(`/products/${productId}/variants/`);
+
 export const getVariant = (id: number) =>
   fetchOne<Variant>(`/variants/${id}/`);
+
+export const updateVariant = (id: number, data: Partial<Omit<VariantCreate, 'product_id'>>) =>
+  patchData<Variant>(`/variants/${id}/`, data);
+
+export const deleteVariant = (id: number) =>
+  apiClient.delete(`/variants/${id}/`);
+
+export interface VariantAttributeValue {
+  id: number;
+  attribute_id: number;
+  attribute_code: string;
+  attribute_name: string;
+  data_type: string;
+  value: string | number | boolean | null;
+  attribute_value_id: number | null;
+  attribute_value_label: string | null;
+}
+
+export const getVariantAttributeValues = (variantId: number) =>
+  fetchOne<VariantAttributeValue[]>(`/variants/${variantId}/attribute-values/`);
 
 // Variant grouping types and functions
 export interface VariantComparison {
@@ -793,6 +862,14 @@ export interface TranslationResults {
 export const getTranslationTaskResults = (taskId: number) =>
   fetchOne<TranslationResults>(`/translation-tasks/${taskId}/results/`);
 
+// Returns the URL for downloading translations Excel export
+export const getTranslationExportUrl = (taskId: number) =>
+  `${import.meta.env.VITE_API_BASE_URL || '/api/v1'}/translations/export/${taskId}/`;
+
+// Returns the URL for downloading translated products CSV (attributes + values) for a locale
+export const getTranslatedProductsCsvExportUrl = (localeCode: string) =>
+  `${import.meta.env.VITE_API_BASE_URL || '/api/v1'}/translations/export-translated-products-csv/?locale_code=${encodeURIComponent(localeCode)}`;
+
 export interface TranslationStatusCounts {
   total: number;
   translated: number;
@@ -826,7 +903,7 @@ export const getTranslatableAttributes = () =>
 // Keywords
 export const createPlannerRun = (data: {
   locale: string;
-  product_type: string;
+  product_type_id?: number;
   seed_terms: string[];
   negative_terms: string[];
 }) => postData<PlannerRun>('/keywords/planner-run/', data);
@@ -839,9 +916,90 @@ export const getPlannerRuns = (params?: PaginationParams) =>
 export const getPlannerKeywords = (runId: number) =>
   fetchPaginated<PlannerKeyword>('/planner-run-keywords/', { run_id: runId });
 
+export interface ImportKeywordsCsvParams {
+  locale_code: string;
+  channel_code: string;
+  product_type_id?: number | null;
+  run_id?: number | null;
+  source_code?: string;
+  month?: string;
+  delimiter?: string;
+}
+export interface ImportKeywordsCsvResult {
+  run_id: number;
+  keywords_created: number;
+  keywords_updated: number;
+  metrics_created: number;
+  metrics_updated: number;
+  run_links: number;
+}
+export const importKeywordsCsv = (file: File, params: ImportKeywordsCsvParams) =>
+  uploadFile<ImportKeywordsCsvResult>('/keywords/planner-run/import-csv/', file, {
+    locale_code: params.locale_code,
+    channel_code: params.channel_code,
+    ...(params.product_type_id != null && { product_type_id: String(params.product_type_id) }),
+    ...(params.run_id != null && { run_id: String(params.run_id) }),
+    ...(params.source_code && { source_code: params.source_code }),
+    ...(params.month && { month: params.month }),
+    ...(params.delimiter && { delimiter: params.delimiter }),
+  });
+
+// Keyword mapping
+export interface RunAttributeMap {
+  id: number;
+  keyword_id: number;
+  keyword_term: string;
+  attribute_code: string;
+  attribute_value_id: number | null;
+  attribute_value_code: string | null;
+  confidence: number | null;
+  status: 'suggested' | 'approved' | 'rejected';
+  tagged_by: string;
+  reason_code: string;
+  updated_at: string;
+}
+export const mapPlannerRunKeywords = (runId: number, params?: { limit?: number; dry_run?: boolean }) =>
+  postData<{ mapped: number; mapping_ids: number[] }>(`/keywords/planner-run/${runId}/map/`, params ?? {});
+export const getPlannerRunMappings = (runId: number, params?: { page?: number; page_size?: number }) =>
+  fetchPaginated<RunAttributeMap>(`/keywords/planner-run/${runId}/mappings/`, params);
+export const updatePlannerRunMapping = (attributeMapId: number, status: 'approved' | 'rejected') =>
+  patchData<{ status: string }>(`/keywords/planner-run/mappings/${attributeMapId}/`, { status });
+export const persistPlannerRunMappings = (runId: number) =>
+  postData<{ status: string; message: string }>(`/keywords/planner-run/${runId}/persist-mappings/`, {});
+
+// Title generation (POST /titles/generate/)
+export interface TitleGenerateRequest {
+  variant_ids: number[];
+  locale_code: string;
+  channel_code: string;
+  planner_run_id?: number | null;
+  include_descriptions?: boolean;
+  title_mode_override?: 'auto' | 'review' | null;
+  context?: string;
+}
+
+export interface TitleGenerateOutputItem {
+  status: 'generated' | 'needs_approval';
+  variant_id: number;
+  product_id: number;
+  output_id?: number;
+  run_id?: number;
+  template_id?: number;
+  title?: string;
+  selection_id?: number | null;
+  preview_title?: string;
+  suggestions?: string[];
+}
+
+export interface TitleGenerateResponse {
+  status: 'completed';
+  outputs: TitleGenerateOutputItem[];
+}
+
+export const generateTitles = (data: TitleGenerateRequest) =>
+  postData<TitleGenerateResponse>('/titles/generate/', data);
+
 // Content generation
-export const generateTitles = (data: { variant_ids: number[]; template?: string }) =>
-  postData<GenerationRun>('/titles/generate/', data);
 export const previewContent = (data: { variant_id: number; template?: string }) =>
   postData<{ content: string }>('/content/preview/', data);
 export const generateContent = (data: { variant_ids: number[]; template?: string }) =>
@@ -887,6 +1045,24 @@ export const removeVariantsFromListing = (listingId: number, variantIds: number[
 
 export const getListingDifferences = (listingId: number) =>
   fetchOne<ListingDifferences>(`/channel-listings/${listingId}/differences/`);
+
+export interface AvailableVariantForListing {
+  id: number;
+  sku: string | null;
+  barcode: string | null;
+  product_id: number;
+  attributes: Record<string, string>;
+}
+
+export interface AvailableVariantsForListingResponse {
+  product_id: number | null;
+  product_code: string | null;
+  attribute_codes: string[];
+  variants: AvailableVariantForListing[];
+}
+
+export const getAvailableVariantsForListing = (listingId: number) =>
+  fetchOne<AvailableVariantsForListingResponse>(`/channel-listings/${listingId}/available-variants/`);
 
 export const getListingAxes = (listingId: number) =>
   fetchOne<{ listing_id: number; axes: SetAxesResponse['axes'] }>(`/channel-listings/${listingId}/axes/`);
@@ -1004,6 +1180,8 @@ export interface ListingTitleGenerationResponse {
     selection_id?: number;
     preview_title?: string;
   }>;
+  /** Attribute values that have no translation for the requested locale (so titles show original). */
+  untranslated_attribute_values?: Array<{ attribute_value_id: number; code: string; attr_code: string; attribute_id?: number }>;
 }
 
 export interface AvailableTemplate {
@@ -1021,5 +1199,472 @@ export const getAvailableTemplatesForListing = (listingId: number, localeCode: s
     `/channel-listings/${listingId}/available-templates/?locale=${localeCode}`
   );
 
+export interface CreateDefaultTemplateResponse {
+  template: AvailableTemplate;
+  created: boolean;
+}
+
+export const createDefaultTemplateForListing = (listingId: number, localeCode: string) =>
+  postData<CreateDefaultTemplateResponse>(
+    `/channel-listings/${listingId}/create-default-template/`,
+    { locale_code: localeCode }
+  );
+
 export const generateListingTitles = (listingId: number, data: ListingTitleGenerationRequest) =>
   postData<ListingTitleGenerationResponse>(`/channel-listings/${listingId}/generate-titles/`, data);
+
+export interface ListingGeneratedTitleItem {
+  variant_id: number;
+  sku: string;
+  title: string;
+  generated_at: string | null;
+}
+
+export interface ListingGeneratedTitlesResponse {
+  results: ListingGeneratedTitleItem[];
+}
+
+export const getListingGeneratedTitles = (listingId: number, localeCode: string) =>
+  apiClient
+    .get<ListingGeneratedTitlesResponse>(`/channel-listings/${listingId}/generated-titles/`, {
+      params: { locale_code: localeCode },
+    })
+    .then((res) => res.data);
+
+export const updateListingGeneratedTitle = (
+  listingId: number,
+  variantId: number,
+  localeCode: string,
+  title: string
+) =>
+  apiClient
+    .patch<ListingGeneratedTitleItem>(
+      `/channel-listings/${listingId}/generated-titles/${variantId}/`,
+      { locale_code: localeCode, title }
+    )
+    .then((res) => res.data);
+
+/** All generated titles (DB-wide), filterable by locale and channel */
+export interface AllGeneratedTitleItem {
+  variant_id: number;
+  sku: string;
+  product_id: number | null;
+  product_code: string | null;
+  channel_code: string | null;
+  locale_code: string | null;
+  title: string;
+  generated_at: string | null;
+}
+
+export interface AllGeneratedTitlesResponse {
+  count: number;
+  results: AllGeneratedTitleItem[];
+}
+
+export const getAllGeneratedTitles = (params?: {
+  locale_code?: string;
+  channel_code?: string;
+  page?: number;
+  page_size?: number;
+}) =>
+  apiClient
+    .get<AllGeneratedTitlesResponse>('/generated-titles/', { params })
+    .then((res) => res.data);
+
+export interface VariantAttributeDetailsItem {
+  attribute_id: number;
+  attribute_code: string;
+  attribute_label?: string | null;
+  data_type: string;
+  is_variant_level: boolean;
+  product_attribute_value_id: number;
+  raw_value: string | null;
+  translated_value: string | null;
+  source: string;
+}
+
+export interface VariantAttributeDetailsResponse {
+  attributes: VariantAttributeDetailsItem[];
+}
+
+export const getVariantAttributeDetails = (
+  variantId: number,
+  params: { locale_code: string; channel_code?: string }
+) =>
+  apiClient
+    .get<VariantAttributeDetailsResponse>(`/variants/${variantId}/attribute-details/`, {
+      params,
+    })
+    .then((res) => res.data);
+
+// Variant-level attribute value CRUD
+export interface VariantAttributeValueWrite {
+  attribute_id?: number;
+  attribute_value_id?: number | null;
+  value_text?: string | null;
+  value_number?: number | null;
+  value_bool?: boolean;
+}
+
+export const createVariantAttributeValue = (
+  variantId: number,
+  data: VariantAttributeValueWrite
+) => apiClient.post<{ id: number }>(`/variants/${variantId}/attribute-values/`, data).then((res) => res.data);
+
+export const updateVariantAttributeValue = (
+  variantId: number,
+  pavId: number,
+  data: VariantAttributeValueWrite
+) =>
+  apiClient
+    .patch<{ id: number }>(`/variants/${variantId}/attribute-values/${pavId}/`, data)
+    .then((res) => res.data);
+
+export const deleteVariantAttributeValue = (variantId: number, pavId: number) =>
+  apiClient.delete<void>(`/variants/${variantId}/attribute-values/${pavId}/`).then(() => undefined);
+
+// Title templates (build head term, hook term, attributes)
+export const TEMPLATE_PART_TYPES = {
+  head_term: 'Head term',
+  hook_term: 'Hook term',
+  literal: 'Literal',
+  axis_attribute: 'Axis attribute',
+  attribute_value: 'Attribute value',
+  keyword: 'Keyword',
+  brand: 'Brand',
+} as const;
+
+export interface Template {
+  id: number;
+  product_type_id: number;
+  locale_code: string;
+  channel_code: string;
+  kind: string;
+  version: number;
+  status: string;
+}
+
+export interface TemplatePart {
+  id: number;
+  template_id: number;
+  position: number;
+  part_type: keyof typeof TEMPLATE_PART_TYPES;
+  attribute_id: number | null;
+  keyword_role: string | null;
+  literal_text: string | null;
+  required: boolean;
+}
+
+export const getTemplates = (params?: {
+  product_type_id?: number;
+  channel_code?: string;
+  locale_code?: string;
+} & PaginationParams) =>
+  fetchPaginated<Template>('/templates/', params as Record<string, unknown>);
+
+export const getTemplate = (id: number) => fetchOne<Template>(`/templates/${id}/`);
+
+export interface TemplateCreate {
+  product_type_id: number;
+  locale_code: string;
+  channel_code: string;
+  kind?: string;
+  version?: number;
+  status?: string;
+}
+
+export const createTemplate = (data: TemplateCreate) =>
+  postData<Template, TemplateCreate>('/templates/', {
+    kind: 'title',
+    version: 1,
+    status: 'active',
+    ...data,
+  });
+
+export const updateTemplate = (id: number, data: Partial<TemplateCreate> & { status?: string }) =>
+  patchData<Template>(`/templates/${id}/`, data);
+
+export const deleteTemplate = (id: number) => apiClient.delete(`/templates/${id}/`);
+
+export const getTemplateParts = (templateId: number) =>
+  fetchPaginated<TemplatePart>('/template-parts/', { template_id: templateId }).then((r) => r.results);
+
+export interface TemplatePartCreate {
+  template_id: number;
+  position: number;
+  part_type: string;
+  attribute_id?: number | null;
+  literal_text?: string | null;
+  keyword_role?: string | null;
+  required?: boolean;
+}
+
+export const createTemplatePart = (data: TemplatePartCreate) =>
+  postData<TemplatePart, TemplatePartCreate>('/template-parts/', data);
+
+export const updateTemplatePart = (id: number, data: Partial<TemplatePartCreate>) =>
+  patchData<TemplatePart>(`/template-parts/${id}/`, data);
+
+export const deleteTemplatePart = (id: number) => apiClient.delete(`/template-parts/${id}/`);
+
+// Product-level keyword mapping (per-variant AI mapping)
+export interface PersistProductKeywordMapsRequest {
+  product_id?: number;
+  limit?: number;
+  min_confidence?: number;
+  include_text_values?: boolean;
+  include_i18n?: boolean;
+  include_descriptions?: boolean;
+  max_description_chars?: number;
+  max_text_matches?: number;
+  max_enum_maps?: number;
+  use_llm?: boolean;
+  llm_max_keywords?: number;
+  dry_run?: boolean;
+  /** Tell the AI what to focus on (e.g. "material, installation") */
+  focus_on?: string;
+  /** Tell the AI what to ignore (e.g. "oder, vs, comparison words") */
+  ignore?: string;
+  /** Do not map size or marketplace keywords */
+  ignore_size_and_marketplace?: boolean;
+  /** Prioritize head terms (broad category terms) */
+  focus_head_terms?: boolean;
+  /** Prioritize hook terms (product-specific terms) */
+  focus_hook_terms?: boolean;
+}
+
+export interface PersistProductKeywordMapsResponse {
+  products_processed: number;
+  maps_created: number;
+  maps_updated: number;
+}
+
+export const persistProductKeywordMaps = (runId: number, data: PersistProductKeywordMapsRequest) =>
+  postData<PersistProductKeywordMapsResponse>(`/keywords/planner-run/${runId}/persist-mappings/`, data);
+
+export interface ProductKeywordMap {
+  id: number;
+  product_id: number;
+  keyword_term: string;
+  source: string;
+  match_kind: string;
+  matched_text: string;
+  confidence: number | null;
+  attribute_code: string | null;
+  attribute_name: string | null;
+  attribute_value_label: string | null;
+  attribute_value_code: string | null;
+  num_value: number | null;
+  num_unit: string | null;
+  evidence: Record<string, unknown>;
+  created_at: string;
+}
+
+export const getProductKeywordMaps = (runId: number, params?: PaginationParams & { product_id?: number; source?: string }) =>
+  fetchPaginated<ProductKeywordMap>(`/keywords/planner-run/${runId}/product-maps/`, params);
+
+export const deleteProductKeywordMap = (runId: number, mapId: number) =>
+  apiClient.delete(`/keywords/planner-run/${runId}/product-maps/${mapId}/`);
+
+// Suggested head/hook terms (extract after mapping; user approves/denies for title generation)
+export interface SuggestedHeadTerm {
+  term: string;
+  keyword_id: number;
+  product_count: number;
+  match_kinds: string[];
+  avg_searches: number;
+  product_type_id: number | null;
+  product_type_code: string | null;
+  /** Product type label (e.g. English meaning): "Shower receiver" */
+  product_type_default_label?: string | null;
+  /** Longer description (e.g. notes) for the product type */
+  product_type_notes?: string | null;
+  /** Main category for the product type */
+  product_type_main_category?: string | null;
+  /** AI-generated short English meaning (when use_ai_meaning=1) */
+  meaning_en?: string | null;
+}
+export interface ProductDisplay {
+  code: string | null;
+  default_label: string | null;
+  variant_sku: string | null;
+  variant_source_title: string | null;
+}
+export interface SuggestedHookTerm {
+  term: string;
+  keyword_id: number;
+  match_kind: string;
+  source: string;
+  attribute_code: string | null;
+  attribute_label: string | null;
+  attribute_id: number | null;
+  avg_searches: number;
+  product_id: number;
+  product_display: ProductDisplay;
+}
+export interface ProductVariantSummary {
+  id: number;
+  sku: string | null;
+  source_title: string | null;
+}
+
+export interface SuggestedTermsResponse {
+  run_id: number;
+  product_type_id: number | null;
+  product_type_code?: string | null;
+  /** Product type label (e.g. English meaning): "Shower receiver" */
+  product_type_default_label?: string | null;
+  product_type_notes?: string | null;
+  product_type_main_category?: string | null;
+  product_id: number | null;
+  locale_id: number;
+  channel_id: number | null;
+  max_head_terms: number;
+  max_hook_terms: number;
+  suggested_head_terms: SuggestedHeadTerm[];
+  suggested_hook_terms: SuggestedHookTerm[];
+  product_variants: Record<string, ProductVariantSummary[]>;
+  approve_head_url: string | null;
+  approve_hook_url: string | null;
+}
+
+export const getSuggestedTerms = (
+  runId: number,
+  params: {
+    product_id?: number;
+    locale_id: number;
+    channel_id?: number;
+    max_head_terms?: number;
+    max_hook_terms?: number;
+    /** Use AI to generate short English meaning for each head term (requires OPENAI_API_KEY) */
+    use_ai_meaning?: boolean;
+  }
+) =>
+  apiClient
+    .get<SuggestedTermsResponse>(`/keywords/planner-run/${runId}/suggested-terms/`, {
+      params: { ...params, use_ai_meaning: params.use_ai_meaning ? '1' : undefined },
+    })
+    .then((r) => r.data);
+
+export interface HeadTermItem {
+  term: string;
+  source: 'label' | 'synonym';
+  id: number | null;
+}
+export const getHeadTerms = (
+  productTypeId: number,
+  params: { locale_id: number; channel_id?: number | null }
+) =>
+  apiClient
+    .get<{ terms: HeadTermItem[] }>(`/product-types/${productTypeId}/head-terms/`, { params })
+    .then((r) => r.data);
+
+export const removeHeadTerm = (productTypeId: number, synonymId: number) =>
+  apiClient.delete(`/product-types/${productTypeId}/head-terms/${synonymId}/`);
+
+export const addHeadTerm = (
+  productTypeId: number,
+  data: { locale_id: number; channel_id?: number | null; term: string }
+) =>
+  apiClient
+    .post<{ id: number; term: string; locale_id: number; channel_id: number | null }>(
+      `/product-types/${productTypeId}/head-terms/`,
+      data
+    )
+    .then((r) => r.data);
+
+export interface HookTermItem {
+  id: number;
+  term: string;
+  locale_id: number;
+  channel_id: number | null;
+  priority: number;
+}
+export const getHookTerms = (
+  productId: number,
+  params: { locale_id: number; channel_id?: number | null }
+) =>
+  apiClient
+    .get<{ terms: HookTermItem[] }>(`/products/${productId}/hook-terms/`, { params })
+    .then((r) => r.data);
+
+export const removeHookTerm = (productId: number, hookTermId: number) =>
+  apiClient.delete(`/products/${productId}/hook-terms/${hookTermId}/`);
+
+export const addHookTerm = (
+  productId: number,
+  data: { locale_id: number; channel_id?: number | null; term: string; priority?: number }
+) =>
+  apiClient
+    .post<{ id: number; term: string; locale_id: number; channel_id: number | null; priority: number }>(
+      `/products/${productId}/hook-terms/`,
+      data
+    )
+    .then((r) => r.data);
+
+// Saved terms (aggregate by locale/channel) for the Saved terms page
+export interface SavedTermsHeadItem {
+  id: number | null;
+  term: string;
+  source: 'label' | 'synonym';
+}
+export interface SavedTermsHeadByProductType {
+  product_type_id: number;
+  product_type_code: string | null;
+  default_label: string;
+  terms: SavedTermsHeadItem[];
+}
+export interface SavedTermsHookItem {
+  id: number;
+  term: string;
+  priority: number;
+}
+export interface SavedTermsHookByProduct {
+  product_id: number;
+  product_code: string | null;
+  default_label: string;
+  terms: SavedTermsHookItem[];
+}
+export interface SavedTermsResponse {
+  locales: Array<{ id: number; code: string; name?: string }>;
+  channels: Array<{ id: number; code: string; name?: string }>;
+  head_terms_by_product_type: SavedTermsHeadByProductType[];
+  hook_terms_by_product: SavedTermsHookByProduct[];
+}
+export const getSavedTerms = (params: { locale_id?: number; channel_id?: number }) =>
+  apiClient.get<SavedTermsResponse>('/keywords/saved-terms/', { params }).then((r) => r.data);
+
+// Head selection (choose a specific head term per product/locale/channel)
+export interface ProductHeadSelection {
+  id: number | null;
+  head_text: string | null;
+  head_source: string | null;
+  status: string | null;
+  head_keyword_id: number | null;
+}
+
+export const getProductHeadSelection = (
+  productId: number,
+  params: { locale_code: string; channel_code: string }
+) =>
+  apiClient
+    .get<ProductHeadSelection>(`/products/${productId}/head-selection/`, { params })
+    .then((r) => r.data);
+
+export const setProductHeadSelection = (
+  productId: number,
+  data: { locale_code: string; channel_code: string; head_text: string }
+) =>
+  apiClient
+    .post<ProductHeadSelection>(`/products/${productId}/head-selection/`, data)
+    .then((r) => r.data);
+
+export const clearProductHeadSelection = (
+  productId: number,
+  data: { locale_code: string; channel_code: string }
+) =>
+  apiClient
+    .post(`/products/${productId}/head-selection/`, { ...data, head_text: null })
+    .then(() => undefined);
+
+

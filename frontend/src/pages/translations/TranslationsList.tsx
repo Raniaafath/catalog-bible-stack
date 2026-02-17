@@ -1,11 +1,14 @@
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { Plus, RefreshCw, Clock, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
+import { Plus, RefreshCw, Clock, CheckCircle, AlertCircle, Loader2, Download } from 'lucide-react';
 import { PageHeader } from '@/components/PageHeader';
 import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { DataTable } from '@/components/DataTable';
 import { Progress } from '@/components/ui/progress';
-import { getTranslationTasks } from '@/lib/api';
+import { Label } from '@/components/ui/label';
+import { getTranslationTasks, getLocales, getTranslatedProductsCsvExportUrl } from '@/lib/api';
 
 const statusColors: Record<string, string> = {
   pending: 'bg-yellow-100 text-yellow-800',
@@ -48,12 +51,19 @@ function formatDuration(seconds: number | null): string {
 
 export default function TranslationsList() {
   const navigate = useNavigate();
+  const [csvLocale, setCsvLocale] = useState('');
 
   const { data: tasks, isLoading, refetch } = useQuery({
     queryKey: ['translation-tasks'],
     queryFn: () => getTranslationTasks(),
     refetchInterval: 5000, // Refresh every 5 seconds
   });
+
+  const { data: locales } = useQuery({
+    queryKey: ['locales'],
+    queryFn: () => getLocales(),
+  });
+  const localeOptions = locales?.results ?? [];
 
   const modelBadgeColors: Record<string, string> = {
     'gpt-4o-mini': 'bg-green-100 text-green-800',
@@ -192,6 +202,41 @@ export default function TranslationsList() {
           </div>
         }
       />
+
+      <Card className="mb-6">
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <Download className="w-4 h-4" />
+            Download translated products (CSV)
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-wrap items-end gap-4">
+          <div className="space-y-2">
+            <Label htmlFor="csv-locale">Language</Label>
+            <select
+              id="csv-locale"
+              value={csvLocale}
+              onChange={(e) => setCsvLocale(e.target.value)}
+              className="flex h-9 w-[180px] rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm"
+            >
+              <option value="">Select locale</option>
+              {localeOptions.map((loc: { id: number; code: string; name?: string }) => (
+                <option key={loc.id} value={loc.code}>
+                  {loc.code}{loc.name ? ` — ${loc.name}` : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+          <Button
+            variant="outline"
+            disabled={!csvLocale}
+            onClick={() => window.open(getTranslatedProductsCsvExportUrl(csvLocale), '_blank')}
+          >
+            <Download className="w-4 h-4 mr-2" />
+            Download CSV
+          </Button>
+        </CardContent>
+      </Card>
 
       <DataTable
         columns={columns}

@@ -5,6 +5,10 @@ from content.models import Locale
 from kw.models import PlannerRun
 from pub.models import (
     Channel,
+    ChannelListing,
+    ChannelListingMap,
+    ChannelLocalePolicy,
+    ChannelPolicySet,
     ContentSet,
     ContentSetItem,
     ExportJob,
@@ -16,12 +20,149 @@ from pub.models import (
     Template,
     TemplatePart,
 )
+from catalog.models import ChannelListingAxis
+from catalog.services.axis_resolution import get_axes_for_context
 
 
 class ChannelSerializer(serializers.ModelSerializer):
     class Meta:
         model = Channel
-        fields = ["id", "code", "name", "is_active", "priority"]
+        fields = ["id", "code", "name", "is_active", "priority", "created_at"]
+        read_only_fields = ["id", "created_at"]
+
+    def validate_code(self, value):
+        """Ensure code is unique (except for current instance on update)"""
+        if self.instance and self.instance.code == value:
+            return value
+        if Channel.objects.filter(code=value).exists():
+            raise serializers.ValidationError("A channel with this code already exists.")
+        return value
+
+
+class ChannelPolicySetSerializer(serializers.ModelSerializer):
+    channel_code = serializers.CharField(source="channel.code", read_only=True)
+    
+    class Meta:
+        model = ChannelPolicySet
+        fields = ["id", "channel", "channel_code", "version", "status", "notes", "created_at"]
+        read_only_fields = ["id", "created_at"]
+
+    def validate(self, attrs):
+        """Ensure unique version per channel"""
+        channel = attrs.get("channel") or (self.instance.channel if self.instance else None)
+        version = attrs.get("version") or (self.instance.version if self.instance else None)
+        
+        if channel and version:
+            existing = ChannelPolicySet.objects.filter(channel=channel, version=version)
+            if self.instance:
+                existing = existing.exclude(id=self.instance.id)
+            if existing.exists():
+                raise serializers.ValidationError(
+                    {"version": f"A policy set with version {version} already exists for this channel."}
+                )
+        return attrs
+
+
+class ChannelLocalePolicySerializer(serializers.ModelSerializer):
+    channel_code = serializers.CharField(source="policy_set.channel.code", read_only=True)
+    locale_code = serializers.CharField(source="locale.code", read_only=True)
+    policy_set_id = serializers.IntegerField(write_only=True, required=False)
+    locale_id = serializers.IntegerField(write_only=True, required=False)
+    
+    class Meta:
+        model = ChannelLocalePolicy
+        fields = [
+            "id",
+            "policy_set",
+            "policy_set_id",
+            "channel_code",
+            "locale",
+            "locale_id",
+            "locale_code",
+            "country_code",
+            "currency_code",
+            "title_max_len",
+            "meta_title_max_len",
+            "meta_description_max_len",
+            "description_max_len",
+            "bullet_count",
+            "bullet_max_len",
+            "title_separator",
+            "brand_position",
+            "title_mode",
+            "auto_create_selection",
+            "auto_approve_selection",
+            "selection_scope",
+            "context",
+            "normalize_whitespace",
+            "dedupe_words",
+            "banned_terms",
+            "rules_json",
+        ]
+        read_only_fields = ["id"]
+
+    def validate_title_max_len(self, value):
+        if value < 1:
+            raise serializers.ValidationError("Title max length must be at least 1.")
+        if value > 500:
+            raise serializers.ValidationError("Title max length cannot exceed 500.")
+        return value
+
+    def validate_meta_title_max_len(self, value):
+        if value < 1:
+            raise serializers.ValidationError("Meta title max length must be at least 1.")
+        if value > 200:
+            raise serializers.ValidationError("Meta title max length cannot exceed 200.")
+        return value
+
+    def validate_description_max_len(self, value):
+        if value < 1:
+            raise serializers.ValidationError("Description max length must be at least 1.")
+        if value > 20000:
+            raise serializers.ValidationError("Description max length cannot exceed 20000.")
+        return value
+
+    def validate_bullet_count(self, value):
+        if value < 0:
+            raise serializers.ValidationError("Bullet count cannot be negative.")
+        if value > 20:
+            raise serializers.ValidationError("Bullet count cannot exceed 20.")
+        return value
+
+    def validate_bullet_max_len(self, value):
+        if value < 1:
+            raise serializers.ValidationError("Bullet max length must be at least 1.")
+        if value > 1000:
+            raise serializers.ValidationError("Bullet max length cannot exceed 1000.")
+        return value
+
+    def create(self, validated_data):
+        """Handle policy_set_id and locale_id if provided"""
+        policy_set_id = validated_data.pop("policy_set_id", None)
+        locale_id = validated_data.pop("locale_id", None)
+        
+        if policy_set_id:
+            from pub.models import ChannelPolicySet
+            validated_data["policy_set"] = ChannelPolicySet.objects.get(id=policy_set_id)
+        
+        if locale_id:
+            validated_data["locale"] = Locale.objects.get(id=locale_id)
+        
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        """Handle policy_set_id and locale_id if provided"""
+        policy_set_id = validated_data.pop("policy_set_id", None)
+        locale_id = validated_data.pop("locale_id", None)
+        
+        if policy_set_id:
+            from pub.models import ChannelPolicySet
+            validated_data["policy_set"] = ChannelPolicySet.objects.get(id=policy_set_id)
+        
+        if locale_id:
+            validated_data["locale"] = Locale.objects.get(id=locale_id)
+        
+        return super().update(instance, validated_data)
 
 
 class TemplateSerializer(serializers.ModelSerializer):
@@ -449,3 +590,224 @@ class GenerationRunSerializer(serializers.ModelSerializer):
 
     def get_status(self, obj):
         return "completed"
+
+
+# ============================================================================
+# Channel Listing (Group) Serializers
+# ============================================================================
+
+
+class ChannelListingSerializer(serializers.ModelSerializer):
+    """Serializer for ChannelListing (marketplace listing groups)."""
+    
+    product_code = serializers.SerializerMethodField()
+    channel_code = serializers.CharField(source="channel.code", read_only=True)
+    locale_code = serializers.CharField(source="locale.code", read_only=True, allow_null=True)
+    variant_count = serializers.SerializerMethodField()
+    
+    def get_product_code(self, obj):
+        return obj.product.code if obj.product else None
+
+    class Meta:
+        model = ChannelListing
+        fields = [
+            "id",
+            "product_id",
+            "product_code",
+            "channel_id",
+            "channel_code",
+            "locale_id",
+            "locale_code",
+            "name",
+            "is_default",
+            "variant_count",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+    def get_variant_count(self, obj):
+        return getattr(obj, "variant_count", None) or ChannelListingMap.objects.filter(listing=obj).count()
+
+
+class ChannelListingCreateSerializer(serializers.Serializer):
+    """Serializer for creating a new ChannelListing."""
+    
+    product_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+    channel_id = serializers.IntegerField(min_value=1)
+    locale_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+    name = serializers.CharField(max_length=200, required=False, allow_blank=True, default="")
+    is_default = serializers.BooleanField(required=False, default=True)
+
+    def validate_product_id(self, value):
+        if value is None:
+            return value
+        if not Product.objects.filter(id=value).exists():
+            raise serializers.ValidationError("Unknown product_id.")
+        return value
+    
+    def validate(self, attrs):
+        return attrs
+
+    def validate_channel_id(self, value):
+        if not Channel.objects.filter(id=value, is_active=True).exists():
+            raise serializers.ValidationError("Unknown or inactive channel_id.")
+        return value
+
+    def validate_locale_id(self, value):
+        if value is None:
+            return value
+        if not Locale.objects.filter(id=value).exists():
+            raise serializers.ValidationError("Unknown locale_id.")
+        return value
+
+
+class MoveVariantsSerializer(serializers.Serializer):
+    """Serializer for moving variants to a listing."""
+    
+    variant_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        allow_empty=False,
+    )
+
+    def validate_variant_ids(self, value):
+        variants = Variant.objects.filter(id__in=value)
+        if len(value) != variants.count():
+            known = {v.id for v in variants}
+            missing = [vid for vid in value if vid not in known]
+            raise serializers.ValidationError(f"Unknown variant_ids: {missing}")
+        return value
+
+
+class RemoveVariantsSerializer(serializers.Serializer):
+    """Serializer for removing variants from a listing."""
+    
+    variant_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        allow_empty=False,
+    )
+
+
+class ListingAxisSerializer(serializers.Serializer):
+    """Serializer for a single axis definition."""
+    
+    attribute_id = serializers.IntegerField(min_value=1)
+    position = serializers.IntegerField(min_value=0, required=False, default=0)
+    label_override = serializers.CharField(max_length=200, required=False, allow_blank=True, allow_null=True)
+    enabled = serializers.BooleanField(required=False, default=True)
+
+    def validate_attribute_id(self, value):
+        from catalog.models import Attribute
+        if not Attribute.objects.filter(id=value).exists():
+            raise serializers.ValidationError(f"Unknown attribute_id: {value}")
+        return value
+
+
+class SetListingAxesSerializer(serializers.Serializer):
+    """Serializer for setting listing axes."""
+    
+    axes = serializers.ListField(
+        child=ListingAxisSerializer(),
+        allow_empty=True,
+    )
+
+
+class ChannelListingAxisSerializer(serializers.ModelSerializer):
+    """Serializer for ChannelListingAxis read operations."""
+    
+    attribute_code = serializers.CharField(source="attribute.code", read_only=True)
+
+    class Meta:
+        model = ChannelListingAxis
+        fields = [
+            "id",
+            "listing_id",
+            "attribute_id",
+            "attribute_code",
+            "position",
+            "label_override",
+            "enabled",
+            "created_at",
+        ]
+
+
+class ChannelListingDetailSerializer(serializers.ModelSerializer):
+    """Detailed serializer for ChannelListing with variants and axes."""
+    
+    product_code = serializers.SerializerMethodField()
+    product_type_id = serializers.SerializerMethodField()
+    channel_code = serializers.CharField(source="channel.code", read_only=True)
+    locale_code = serializers.SerializerMethodField()
+    variants = serializers.SerializerMethodField()
+    axes = serializers.SerializerMethodField()
+    variant_count = serializers.SerializerMethodField()
+    
+    def get_product_code(self, obj):
+        return obj.product.code if obj.product else None
+
+    def get_product_type_id(self, obj):
+        return obj.product.product_type_id if obj.product else None
+
+    class Meta:
+        model = ChannelListing
+        fields = [
+            "id",
+            "product_id",
+            "product_code",
+            "product_type_id",
+            "channel_id",
+            "channel_code",
+            "locale_id",
+            "locale_code",
+            "name",
+            "is_default",
+            "variants",
+            "variant_count",
+            "axes",
+            "created_at",
+            "updated_at",
+        ]
+
+    def get_locale_code(self, obj):
+        return obj.locale.code if obj.locale else None
+
+    def get_variants(self, obj):
+        maps = ChannelListingMap.objects.filter(listing=obj).select_related("variant")
+        return [
+            {
+                "id": m.variant.id,
+                "sku": m.variant.sku,
+                "barcode": m.variant.barcode,
+                "external_id": m.external_id,
+                "sync_status": m.sync_status,
+            }
+            for m in maps
+        ]
+
+    def get_axes(self, obj):
+        if obj.product_id:
+            resolved = get_axes_for_context(obj.product, channel=obj.channel, listing=obj)
+            return [
+                {
+                    "attribute_id": a.attribute_id,
+                    "attribute_code": a.attribute_code,
+                    "position": a.position,
+                    "label_override": a.label_override,
+                }
+                for a in resolved
+            ]
+        axes = ChannelListingAxis.objects.filter(listing=obj).select_related("attribute").order_by("position")
+        return [
+            {
+                "id": axis.id,
+                "attribute_id": axis.attribute.id,
+                "attribute_code": axis.attribute.code,
+                "position": axis.position,
+                "label_override": axis.label_override,
+                "enabled": axis.enabled,
+            }
+            for axis in axes
+        ]
+
+    def get_variant_count(self, obj):
+        return ChannelListingMap.objects.filter(listing=obj).count()

@@ -20,6 +20,7 @@ from api.v1.serializers.keywords import (
     PlannerRunKeywordSerializer,
     PlannerRunSerializer,
     PlannerSeedSerializer,
+    ProductKeywordMapSerializer,
 )
 from api.v1.serializers.pub import (
     ChannelListingAxisSerializer,
@@ -85,6 +86,7 @@ __all__ = [
     "ProductI18nSerializer",
     "ProductTypeI18nSerializer",
     "ProductImportSerializer",
+    "ProductKeywordMapSerializer",
     "ProductTypeSerializer",
     "PlannerRunCreateSerializer",
     "PlannerRunKeywordSerializer",

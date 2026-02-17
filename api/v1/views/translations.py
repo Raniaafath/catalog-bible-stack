@@ -204,7 +204,7 @@ class TranslationTaskViewSet(viewsets.ModelViewSet):
                 ).select_related("product_attribute_value", "product_attribute_value__attribute")
             
             items = []
-            for i18n in queryset[:100]:  # Limit to first 100 for performance
+            for i18n in queryset:
                 pav = i18n.product_attribute_value
                 source_value = pav.value_text or (pav.attribute_value.code if pav.attribute_value else "")
                 items.append({
@@ -218,9 +218,9 @@ class TranslationTaskViewSet(viewsets.ModelViewSet):
             return Response({
                 "scope": task.scope,
                 "locale": task.locale,
-                "count": queryset.count(),
+                "count": len(items),
                 "items": items,
-                "truncated": queryset.count() > 100,
+                "truncated": False,
             })
         
         return Response(
@@ -496,3 +496,261 @@ class ProductTranslationView(APIView):
             pav_i18n.save()
 
         return Response({"updated": True}, status=status.HTTP_200_OK)
+
+
+class ExportTranslationsView(APIView):
+    """Export translated attribute values to Excel file."""
+    
+    def get(self, request, task_id: int):
+        import os
+        from datetime import datetime
+        from collections import defaultdict
+        from django.http import FileResponse
+        
+        try:
+            from openpyxl import Workbook
+        except ImportError:
+            return Response(
+                {"error": "openpyxl is required for Excel export"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
+        # Get the translation task
+        try:
+            task = TranslationTask.objects.get(id=task_id)
+        except TranslationTask.DoesNotExist:
+            return Response(
+                {"error": f"Translation task {task_id} not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Get or create the locale
+        try:
+            locale = Locale.objects.get(code=task.locale)
+        except Locale.DoesNotExist:
+            return Response(
+                {"error": f"Locale {task.locale} not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Get translatable attributes
+        translatable_attrs = Attribute.objects.filter(
+            is_value_translatable=True
+        ).order_by("code")
+        attr_codes = list(translatable_attrs.values_list("code", flat=True))
+        attr_id_to_code = {a.id: a.code for a in translatable_attrs}
+        
+        # Get all translated ProductAttributeValues for this locale
+        pav_i18n_qs = ProductAttributeValueI18n.objects.filter(
+            locale=locale,
+            product_attribute_value__attribute__in=translatable_attrs
+        ).select_related(
+            "product_attribute_value",
+            "product_attribute_value__product",
+            "product_attribute_value__variant",
+            "product_attribute_value__attribute",
+            "product_attribute_value__attribute_value",
+        )
+        
+        # Also get the source PAVs to include products without translations
+        pav_qs = ProductAttributeValue.objects.filter(
+            attribute__in=translatable_attrs
+        ).select_related(
+            "product",
+            "variant",
+            "attribute",
+            "attribute_value",
+        )
+        
+        # Build a map of products/variants -> attribute -> translated value
+        # Structure: { (product_id, variant_id): { attr_code: translated_value } }
+        product_translations = defaultdict(dict)
+        product_info = {}  # { (product_id, variant_id): (product_code, product_name, variant_sku) }
+        
+        # First, populate with source values
+        for pav in pav_qs:
+            product = pav.product
+            variant = pav.variant
+            
+            # Determine the product/variant key
+            if variant:
+                key = (variant.product_id, variant.id)
+                if key not in product_info:
+                    product_info[key] = (
+                        variant.product.code if variant.product else "",
+                        variant.product.default_label if variant.product else "",
+                        variant.internal_sku or variant.sku or "",
+                    )
+            elif product:
+                key = (product.id, None)
+                if key not in product_info:
+                    product_info[key] = (product.code, product.default_label, "")
+            else:
+                continue
+            
+            # Get source value
+            attr_code = attr_id_to_code.get(pav.attribute_id)
+            if attr_code:
+                if pav.value_text:
+                    source_value = pav.value_text
+                elif pav.attribute_value:
+                    source_value = pav.attribute_value.code
+                elif pav.value_number is not None:
+                    source_value = str(pav.value_number)
+                elif pav.value_bool is not None:
+                    source_value = "Yes" if pav.value_bool else "No"
+                else:
+                    source_value = ""
+                
+                # Store as source (will be overwritten if translation exists)
+                product_translations[key][attr_code] = source_value
+        
+        # Then, overlay with translated values
+        for pav_i18n in pav_i18n_qs:
+            pav = pav_i18n.product_attribute_value
+            variant = pav.variant
+            product = pav.product
+            
+            if variant:
+                key = (variant.product_id, variant.id)
+            elif product:
+                key = (product.id, None)
+            else:
+                continue
+            
+            attr_code = attr_id_to_code.get(pav.attribute_id)
+            if attr_code and pav_i18n.value_text:
+                product_translations[key][attr_code] = pav_i18n.value_text
+        
+        # Create the Excel workbook
+        wb = Workbook()
+        ws = wb.active
+        ws.title = f"Translations {task.locale}"
+        
+        # Write header row
+        headers = ["Product Code", "Product Name", "Variant SKU"] + attr_codes
+        ws.append(headers)
+        
+        # Style the header row
+        for col_num, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col_num)
+            cell.font = cell.font.copy(bold=True)
+        
+        # Write data rows
+        for key in sorted(product_info.keys()):
+            product_code, product_name, variant_sku = product_info[key]
+            translations = product_translations.get(key, {})
+            
+            row = [product_code, product_name, variant_sku]
+            for attr_code in attr_codes:
+                row.append(translations.get(attr_code, ""))
+            
+            ws.append(row)
+        
+        # Adjust column widths
+        for col_num, header in enumerate(headers, 1):
+            ws.column_dimensions[ws.cell(row=1, column=col_num).column_letter].width = max(15, len(header) + 2)
+        
+        # Save to file
+        os.makedirs("exports", exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"translations_{task.locale}_{timestamp}.xlsx"
+        filepath = os.path.join("exports", filename)
+        wb.save(filepath)
+        
+        # Return the file
+        response = FileResponse(
+            open(filepath, "rb"),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
+
+
+class ExportTranslatedProductsCsvView(APIView):
+    """
+    GET /translations/export-translated-products-csv/?locale_code=de-DE
+    Returns CSV: locale, product_code, product_name, variant_sku, attribute_code, source_value, translated_value.
+    """
+
+    def get(self, request):
+        import csv
+        from io import StringIO
+        from django.http import HttpResponse
+
+        locale_code = request.query_params.get("locale_code")
+        if not locale_code:
+            return Response(
+                {"detail": "locale_code query parameter is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            locale = Locale.objects.get(code=locale_code)
+        except Locale.DoesNotExist:
+            return Response(
+                {"detail": f"Locale {locale_code} not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        translatable_attrs = Attribute.objects.filter(is_value_translatable=True)
+        qs = (
+            ProductAttributeValueI18n.objects.filter(
+                locale=locale,
+                product_attribute_value__attribute__in=translatable_attrs,
+            )
+            .select_related(
+                "product_attribute_value",
+                "product_attribute_value__product",
+                "product_attribute_value__variant",
+                "product_attribute_value__attribute",
+                "product_attribute_value__attribute_value",
+            )
+        )
+
+        buf = StringIO()
+        writer = csv.writer(buf)
+        writer.writerow([
+            "locale",
+            "product_code",
+            "product_name",
+            "variant_sku",
+            "attribute_code",
+            "source_value",
+            "translated_value",
+        ])
+
+        for pav_i18n in qs:
+            pav = pav_i18n.product_attribute_value
+            product = pav.product or (pav.variant.product if pav.variant else None)
+            variant = pav.variant
+            product_code = (product.code if product else "") or ""
+            # Product has default_label, not name
+            product_name = (getattr(product, "default_label", "") if product else "") or ""
+            variant_sku = (variant.internal_sku or variant.sku if variant else "") or ""
+            attr_code = (pav.attribute.code if pav.attribute else "") or ""
+            if pav.value_text:
+                source_value = pav.value_text
+            elif pav.attribute_value:
+                source_value = pav.attribute_value.code or ""
+            elif pav.value_number is not None:
+                source_value = str(pav.value_number)
+            elif pav.value_bool is not None:
+                source_value = "Yes" if pav.value_bool else "No"
+            else:
+                source_value = ""
+            translated_value = (pav_i18n.value_text or "").strip()
+            writer.writerow([
+                locale_code,
+                product_code,
+                product_name,
+                variant_sku,
+                attr_code,
+                source_value,
+                translated_value,
+            ])
+
+        response = HttpResponse(buf.getvalue(), content_type="text/csv; charset=utf-8")
+        safe_code = locale_code.replace("-", "_").replace(" ", "_")
+        response["Content-Disposition"] = f'attachment; filename="translated_products_{safe_code}.csv"'
+        return response
+     return response

@@ -1,0 +1,15 @@
+parent_id,sku,brand,title,category,color,size,material,price,stock,barcode
+BIKE-001,BIKE-001-RED-M,Trek,Mountain Bike Pro,Bikes,Red,Medium,Aluminum,599.99,50,123456001
+BIKE-001,BIKE-001-RED-L,Trek,Mountain Bike Pro,Bikes,Red,Large,Aluminum,649.99,30,123456002
+BIKE-001,BIKE-001-BLUE-M,Trek,Mountain Bike Pro,Bikes,Blue,Medium,Aluminum,599.99,45,123456003
+BIKE-001,BIKE-001-BLUE-L,Trek,Mountain Bike Pro,Bikes,Blue,Large,Aluminum,649.99,25,123456004
+PHONE-002,PHONE-002-BLK-64,Samsung,Galaxy S24,Phones,Black,64GB,Glass,799.99,100,789012001
+PHONE-002,PHONE-002-BLK-128,Samsung,Galaxy S24,Phones,Black,128GB,Glass,899.99,80,789012002
+PHONE-002,PHONE-002-WHT-64,Samsung,Galaxy S24,Phones,White,64GB,Glass,799.99,90,789012003
+PHONE-002,PHONE-002-WHT-128,Samsung,Galaxy S24,Phones,White,128GB,Glass,899.99,75,789012004
+SHIRT-003,SHIRT-003-RED-S,Nike,Running Shirt,Apparel,Red,Small,Polyester,29.99,200,456789001
+SHIRT-003,SHIRT-003-RED-M,Nike,Running Shirt,Apparel,Red,Medium,Polyester,29.99,250,456789002
+SHIRT-003,SHIRT-003-RED-L,Nike,Running Shirt,Apparel,Red,Large,Polyester,29.99,180,456789003
+SHIRT-003,SHIRT-003-BLUE-S,Nike,Running Shirt,Apparel,Blue,Small,Polyester,29.99,150,456789004
+SHIRT-003,SHIRT-003-BLUE-M,Nike,Running Shirt,Apparel,Blue,Medium,Polyester,29.99,220,456789005
+SHIRT-003,SHIRT-003-BLUE-L,Nike,Running Shirt,Apparel,Blue,Large,Polyester,29.99,160,456789006

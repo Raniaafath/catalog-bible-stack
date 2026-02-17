@@ -78,7 +78,7 @@ class Command(BaseCommand):
         errors = []
         for variant in variants_qs:
             try:
-                output = save_generation(
+                output, _ = save_generation(
                     variant=variant,
                     locale=locale,
                     channel=channel,

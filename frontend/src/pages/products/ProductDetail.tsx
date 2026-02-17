@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Save, Loader2, Plus, Trash2, X, Edit, Package, Eye, ChevronDown, ChevronUp, Tag, List } from 'lucide-react';
+import { ArrowLeft, Save, Loader2, Plus, Trash2, X, Edit, Package, Eye, ChevronDown, ChevronUp, Tag, List, Pencil, Check } from 'lucide-react';
 import { PageHeader } from '@/components/PageHeader';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/components/ui/use-toast';
 import {
@@ -37,6 +38,9 @@ import {
   Variant,
   getVariantAttributeValues,
   getVariantAttributeDetails,
+  createVariantAttributeValue,
+  updateVariantAttributeValue,
+  deleteVariantAttributeValue,
   getProductKeywordMaps,
   getHookTerms,
   removeHookTerm,
@@ -44,7 +48,9 @@ import {
   type ProductKeywordMap,
   type HookTermItem,
   getPlannerRuns,
+  VariantAttributeValueWrite,
 } from '@/lib/api';
+import { getApiErrorMessage } from '@/lib/api';
 import {
   Table,
   TableBody,
@@ -135,6 +141,19 @@ export default function ProductDetail() {
   // Attributes & Values viewer state
   const [attrsViewVariantId, setAttrsViewVariantId] = useState<number | null>(null);
   const [attrsViewLocaleCode, setAttrsViewLocaleCode] = useState<string>('');
+  const groupAttrsCardRef = useRef<HTMLDivElement>(null);
+
+  // Variant attribute editing (in Attributes & Values section)
+  const [attrsEditPavId, setAttrsEditPavId] = useState<number | null>(null);
+  const [attrsEditEnumValueId, setAttrsEditEnumValueId] = useState<number | undefined>(undefined);
+  const [attrsEditTextValue, setAttrsEditTextValue] = useState('');
+  const [attrsEditNumberValue, setAttrsEditNumberValue] = useState('');
+  const [attrsEditBoolValue, setAttrsEditBoolValue] = useState(false);
+  const [attrsNewAttributeId, setAttrsNewAttributeId] = useState<number | undefined>(undefined);
+  const [attrsNewEnumValueId, setAttrsNewEnumValueId] = useState<number | undefined>(undefined);
+  const [attrsNewTextValue, setAttrsNewTextValue] = useState('');
+  const [attrsNewNumberValue, setAttrsNewNumberValue] = useState('');
+  const [attrsNewBoolValue, setAttrsNewBoolValue] = useState(false);
 
   const { data: product, isLoading: isLoadingProduct } = useQuery({
     queryKey: ['product', id],
@@ -190,7 +209,12 @@ export default function ProductDetail() {
     if (!attrsViewLocaleCode && locales.length > 0) setAttrsViewLocaleCode(locales[0].code);
   }, [locales, attrsViewLocaleCode]);
 
-  const { data: variantAttrDetails, isLoading: isLoadingVariantAttrs } = useQuery({
+  useEffect(() => {
+    setAttrsEditPavId(null);
+    setAttrsNewAttributeId(undefined);
+  }, [attrsViewVariantId]);
+
+  const { data: variantAttrDetails, isLoading: isLoadingVariantAttrs, refetch: refetchVariantAttrDetails } = useQuery({
     queryKey: ['variant-attribute-details', attrsViewVariantId, attrsViewLocaleCode],
     queryFn: () =>
       getVariantAttributeDetails(attrsViewVariantId!, {
@@ -198,6 +222,86 @@ export default function ProductDetail() {
         channel_code: undefined,
       }),
     enabled: !!attrsViewVariantId && !!attrsViewLocaleCode,
+  });
+
+  const invalidateVariantAttrs = () => {
+    if (attrsViewVariantId) {
+      queryClient.invalidateQueries({ queryKey: ['variant-attribute-details', attrsViewVariantId, attrsViewLocaleCode] });
+      queryClient.invalidateQueries({ queryKey: ['variant-attributes', attrsViewVariantId] });
+    }
+  };
+
+  const attrsAddMutation = useMutation({
+    mutationFn: async () => {
+      if (!attrsViewVariantId || !attrsNewAttributeId) return;
+      const pta = typeAttributes?.find((p) => p.attribute.id === attrsNewAttributeId);
+      if (!pta) return;
+      const payload: VariantAttributeValueWrite = { attribute_id: attrsNewAttributeId };
+      if (pta.attribute.data_type === 'enum') {
+        if (!attrsNewEnumValueId) throw new Error('Select a value');
+        payload.attribute_value_id = attrsNewEnumValueId;
+      } else if (pta.attribute.data_type === 'text') {
+        if (!attrsNewTextValue.trim()) throw new Error('Enter text');
+        payload.value_text = attrsNewTextValue;
+      } else if (pta.attribute.data_type === 'number') {
+        if (!attrsNewNumberValue.trim()) throw new Error('Enter number');
+        const num = Number(attrsNewNumberValue);
+        if (Number.isNaN(num)) throw new Error('Invalid number');
+        payload.value_number = num;
+      } else if (pta.attribute.data_type === 'bool') {
+        payload.value_bool = attrsNewBoolValue;
+      }
+      await createVariantAttributeValue(attrsViewVariantId, payload);
+    },
+    onSuccess: () => {
+      setAttrsNewAttributeId(undefined);
+      setAttrsNewEnumValueId(undefined);
+      setAttrsNewTextValue('');
+      setAttrsNewNumberValue('');
+      setAttrsNewBoolValue(false);
+      invalidateVariantAttrs();
+      toast({ title: 'Attribute value saved' });
+    },
+    onError: (err) => {
+      toast({ title: 'Failed to save', description: getApiErrorMessage(err), variant: 'destructive' });
+    },
+  });
+
+  const attrsUpdateMutation = useMutation({
+    mutationFn: async ({
+      pavId,
+      item,
+      payload,
+    }: {
+      pavId: number;
+      item: { attribute_id: number; data_type: string };
+      payload: VariantAttributeValueWrite;
+    }) => {
+      if (!attrsViewVariantId) return;
+      await updateVariantAttributeValue(attrsViewVariantId, pavId, payload);
+    },
+    onSuccess: () => {
+      setAttrsEditPavId(null);
+      invalidateVariantAttrs();
+      toast({ title: 'Attribute value updated' });
+    },
+    onError: (err) => {
+      toast({ title: 'Failed to update', description: getApiErrorMessage(err), variant: 'destructive' });
+    },
+  });
+
+  const attrsDeleteMutation = useMutation({
+    mutationFn: async (pavId: number) => {
+      if (!attrsViewVariantId) return;
+      await deleteVariantAttributeValue(attrsViewVariantId, pavId);
+    },
+    onSuccess: () => {
+      invalidateVariantAttrs();
+      toast({ title: 'Attribute value deleted' });
+    },
+    onError: (err) => {
+      toast({ title: 'Failed to delete', description: getApiErrorMessage(err), variant: 'destructive' });
+    },
   });
 
   const productId = id ? Number(id) : undefined;
@@ -851,7 +955,7 @@ export default function ProductDetail() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card ref={groupAttrsCardRef}>
           <CardHeader>
             <div className="flex items-center justify-between">
               <div>
@@ -912,7 +1016,18 @@ export default function ProductDetail() {
           <CardContent className="space-y-6">
             {/* Product-level attributes */}
             <div>
-              <h4 className="font-medium text-sm mb-3">Product attributes</h4>
+              <div className="flex items-center justify-between mb-3">
+                <h4 className="font-medium text-sm">Product attributes</h4>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={() => groupAttrsCardRef.current?.scrollIntoView({ behavior: 'smooth' })}
+                >
+                  <Edit className="w-3 h-3 mr-1" />
+                  Edit above
+                </Button>
+              </div>
               {productAttributes && productAttributes.length > 0 ? (
                 <div className="border rounded-md overflow-hidden">
                   <Table>
@@ -996,38 +1111,271 @@ export default function ProductDetail() {
                     <Loader2 className="w-4 h-4 animate-spin" />
                     <span className="text-sm">Loading attributes…</span>
                   </div>
-                ) : variantAttrDetails?.attributes && variantAttrDetails.attributes.length > 0 ? (
-                  <div className="border rounded-md overflow-hidden">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>Attribute</TableHead>
-                          <TableHead>Raw value</TableHead>
-                          <TableHead>Translated value</TableHead>
-                          <TableHead className="w-24">Source</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {variantAttrDetails.attributes.map((attr) => (
-                          <TableRow key={attr.product_attribute_value_id}>
-                            <TableCell className="font-medium">{attr.attribute_code.replace(/_/g, ' ')}</TableCell>
-                            <TableCell className="text-muted-foreground">{attr.raw_value ?? '—'}</TableCell>
-                            <TableCell>{attr.translated_value ?? (attr.raw_value ?? '—')}</TableCell>
-                            <TableCell>
-                              <Badge variant="outline" className="text-xs font-normal">
-                                {attr.source}
-                              </Badge>
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
                 ) : (
-                  <p className="text-sm text-muted-foreground py-2">No attributes for this variant.</p>
+                  <div className="space-y-3">
+                    {/* Add attribute form */}
+                    {(() => {
+                      const usedAttrIds = new Set((variantAttrDetails?.attributes ?? []).map((a) => a.attribute_id));
+                      const availableAttrs = variantLevelAttributes.filter((pta) => !usedAttrIds.has(pta.attribute.id));
+                      const ptaNew = attrsNewAttributeId ? typeAttributes?.find((p) => p.attribute.id === attrsNewAttributeId) : null;
+                      const isAddDisabled =
+                        !attrsNewAttributeId ||
+                        !ptaNew ||
+                        (ptaNew.attribute.data_type === 'enum' && !attrsNewEnumValueId) ||
+                        (ptaNew.attribute.data_type === 'text' && !attrsNewTextValue.trim()) ||
+                        (ptaNew.attribute.data_type === 'number' && (!attrsNewNumberValue.trim() || Number.isNaN(Number(attrsNewNumberValue))));
+                      return (
+                        <div className="flex flex-wrap items-end gap-2">
+                          <div>
+                            <Label className="text-xs mb-1 block">Add attribute</Label>
+                            <Select
+                              value={attrsNewAttributeId ? String(attrsNewAttributeId) : '_none'}
+                              onValueChange={(v) => {
+                                const id = v === '_none' ? undefined : Number(v);
+                                setAttrsNewAttributeId(id);
+                                setAttrsNewEnumValueId(undefined);
+                                setAttrsNewTextValue('');
+                                setAttrsNewNumberValue('');
+                                setAttrsNewBoolValue(false);
+                              }}
+                            >
+                              <SelectTrigger className="h-8 w-40">
+                                <SelectValue placeholder={availableAttrs.length ? 'Choose' : 'None left'} />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="_none">—</SelectItem>
+                                {availableAttrs.map((pta) => (
+                                  <SelectItem key={pta.attribute.id} value={String(pta.attribute.id)}>
+                                    {pta.attribute.code}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          {ptaNew && (
+                            <div>
+                              <Label className="text-xs mb-1 block">Value</Label>
+                              <div className="flex items-center gap-2">
+                                {ptaNew.attribute.data_type === 'enum' && (
+                                  <Select
+                                    value={attrsNewEnumValueId ? String(attrsNewEnumValueId) : ''}
+                                    onValueChange={(v) => setAttrsNewEnumValueId(Number(v))}
+                                  >
+                                    <SelectTrigger className="h-8 w-36">
+                                      <SelectValue placeholder="Choose" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      {ptaNew.attribute.values?.map((v) => (
+                                        <SelectItem key={v.id} value={String(v.id)}>
+                                          {v.code}
+                                        </SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
+                                )}
+                                {ptaNew.attribute.data_type === 'text' && (
+                                  <Input
+                                    className="h-8 w-36"
+                                    value={attrsNewTextValue}
+                                    onChange={(e) => setAttrsNewTextValue(e.target.value)}
+                                    placeholder="Text"
+                                  />
+                                )}
+                                {ptaNew.attribute.data_type === 'number' && (
+                                  <Input
+                                    className="h-8 w-24"
+                                    type="number"
+                                    value={attrsNewNumberValue}
+                                    onChange={(e) => setAttrsNewNumberValue(e.target.value)}
+                                    placeholder="0"
+                                  />
+                                )}
+                                {ptaNew.attribute.data_type === 'bool' && (
+                                  <div className="flex h-8 items-center">
+                                    <Switch checked={attrsNewBoolValue} onCheckedChange={setAttrsNewBoolValue} />
+                                  </div>
+                                )}
+                                <Button
+                                  size="sm"
+                                  className="h-8"
+                                  onClick={() => attrsAddMutation.mutate()}
+                                  disabled={isAddDisabled || attrsAddMutation.isPending}
+                                >
+                                  {attrsAddMutation.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Plus className="w-3 h-3" />}
+                                </Button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+
+                    {/* Attributes table with Edit/Delete */}
+                    {variantAttrDetails?.attributes && variantAttrDetails.attributes.length > 0 ? (
+                      <div className="border rounded-md overflow-hidden">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Attribute</TableHead>
+                              <TableHead>Raw value</TableHead>
+                              <TableHead>Translated value</TableHead>
+                              <TableHead className="w-24">Source</TableHead>
+                              <TableHead className="w-20 text-right">Actions</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {variantAttrDetails.attributes.map((attr) => {
+                              const inEdit = attrsEditPavId === attr.product_attribute_value_id;
+                              const pta = typeAttributes?.find((p) => p.attribute.id === attr.attribute_id);
+                              const startEdit = () => {
+                                setAttrsEditPavId(attr.product_attribute_value_id);
+                                if (attr.data_type === 'enum') {
+                                  const v = pta?.attribute.values?.find((val) => val.code === attr.raw_value);
+                                  setAttrsEditEnumValueId(v?.id);
+                                  setAttrsEditTextValue('');
+                                  setAttrsEditNumberValue('');
+                                } else if (attr.data_type === 'text') {
+                                  setAttrsEditTextValue(attr.raw_value ?? '');
+                                  setAttrsEditEnumValueId(undefined);
+                                  setAttrsEditNumberValue('');
+                                } else if (attr.data_type === 'number') {
+                                  setAttrsEditNumberValue(attr.raw_value ?? '');
+                                  setAttrsEditEnumValueId(undefined);
+                                  setAttrsEditTextValue('');
+                                } else if (attr.data_type === 'bool') {
+                                  setAttrsEditBoolValue((attr.raw_value ?? '').toLowerCase() === 'true');
+                                  setAttrsEditEnumValueId(undefined);
+                                  setAttrsEditTextValue('');
+                                  setAttrsEditNumberValue('');
+                                }
+                              };
+                              const saveEdit = () => {
+                                if (!pta) return;
+                                const payload: VariantAttributeValueWrite = {};
+                                if (attr.data_type === 'enum') {
+                                  if (attrsEditEnumValueId) payload.attribute_value_id = attrsEditEnumValueId;
+                                } else if (attr.data_type === 'text') {
+                                  payload.value_text = attrsEditTextValue;
+                                } else if (attr.data_type === 'number') {
+                                  const num = Number(attrsEditNumberValue);
+                                  if (!Number.isNaN(num)) payload.value_number = num;
+                                } else if (attr.data_type === 'bool') {
+                                  payload.value_bool = attrsEditBoolValue;
+                                }
+                                if (Object.keys(payload).length) {
+                                  attrsUpdateMutation.mutate({ pavId: attr.product_attribute_value_id, item: attr, payload });
+                                }
+                              };
+                              return (
+                                <TableRow key={attr.product_attribute_value_id}>
+                                  <TableCell className="font-medium">{attr.attribute_code.replace(/_/g, ' ')}</TableCell>
+                                  <TableCell className="text-muted-foreground min-w-[100px]">
+                                    {inEdit && pta ? (
+                                      <>
+                                        {pta.attribute.data_type === 'enum' && (
+                                          <Select
+                                            value={attrsEditEnumValueId ? String(attrsEditEnumValueId) : ''}
+                                            onValueChange={(v) => setAttrsEditEnumValueId(Number(v))}
+                                          >
+                                            <SelectTrigger className="h-8 text-xs max-w-[140px]">
+                                              <SelectValue />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                              {pta.attribute.values?.map((v) => (
+                                                <SelectItem key={v.id} value={String(v.id)}>
+                                                  {v.code}
+                                                </SelectItem>
+                                              ))}
+                                            </SelectContent>
+                                          </Select>
+                                        )}
+                                        {pta.attribute.data_type === 'text' && (
+                                          <Input
+                                            className="h-8 text-xs max-w-[140px]"
+                                            value={attrsEditTextValue}
+                                            onChange={(e) => setAttrsEditTextValue(e.target.value)}
+                                          />
+                                        )}
+                                        {pta.attribute.data_type === 'number' && (
+                                          <Input
+                                            className="h-8 text-xs max-w-[80px]"
+                                            type="number"
+                                            value={attrsEditNumberValue}
+                                            onChange={(e) => setAttrsEditNumberValue(e.target.value)}
+                                          />
+                                        )}
+                                        {pta.attribute.data_type === 'bool' && (
+                                          <Switch checked={attrsEditBoolValue} onCheckedChange={setAttrsEditBoolValue} />
+                                        )}
+                                      </>
+                                    ) : (
+                                      attr.raw_value ?? '—'
+                                    )}
+                                  </TableCell>
+                                  <TableCell>{attr.translated_value ?? (attr.raw_value ?? '—')}</TableCell>
+                                  <TableCell>
+                                    <Badge variant="outline" className="text-xs font-normal">
+                                      {attr.source}
+                                    </Badge>
+                                  </TableCell>
+                                  <TableCell className="text-right">
+                                    {inEdit ? (
+                                      <>
+                                        <Button
+                                          size="icon"
+                                          variant="ghost"
+                                          className="h-7 w-7"
+                                          onClick={saveEdit}
+                                          disabled={attrsUpdateMutation.isPending}
+                                        >
+                                          <Check className="w-4 h-4 text-green-600" />
+                                        </Button>
+                                        <Button
+                                          size="icon"
+                                          variant="ghost"
+                                          className="h-7 w-7"
+                                          onClick={() => setAttrsEditPavId(null)}
+                                        >
+                                          <X className="w-4 h-4" />
+                                        </Button>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Button
+                                          size="icon"
+                                          variant="ghost"
+                                          className="h-7 w-7"
+                                          onClick={startEdit}
+                                          title="Edit"
+                                        >
+                                          <Pencil className="w-4 h-4" />
+                                        </Button>
+                                        <Button
+                                          size="icon"
+                                          variant="ghost"
+                                          className="h-7 w-7 text-destructive hover:text-destructive"
+                                          onClick={() => attrsDeleteMutation.mutate(attr.product_attribute_value_id)}
+                                          disabled={attrsDeleteMutation.isPending}
+                                          title="Delete"
+                                        >
+                                          <Trash2 className="w-4 h-4" />
+                                        </Button>
+                                      </>
+                                    )}
+                                  </TableCell>
+                                </TableRow>
+                              );
+                            })}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    ) : (
+                      <p className="text-sm text-muted-foreground py-2">No attributes for this variant. Add one above.</p>
+                    )}
+                  </div>
                 )
               ) : (
-                <p className="text-sm text-muted-foreground py-2">Select a variant to view its attributes and translated values.</p>
+                <p className="text-sm text-muted-foreground py-2">Select a variant to view and edit its attributes.</p>
               )}
             </div>
           </CardContent>

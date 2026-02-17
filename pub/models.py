@@ -566,7 +566,91 @@ class Approval(models.Model):
         return f"{self.entity_type}:{self.entity_id}"
 
 
+class ChannelListing(models.Model):
+    """
+    Listing group: marketplace-specific set of variants plus axes for a product.
+    One listing group = one listing on a channel (optionally per locale).
+    See docs/GROUPING_AND_MARKETPLACE_AXES.md for product family vs listing group.
+    This allows multiple listings per product+channel combination.
+    
+    Examples:
+    - Product "BIKE-001" on eBay could have:
+      * Listing 1: "Red variants only" (is_default=False)
+      * Listing 2: "Blue variants only" (is_default=False)
+      * Or one default listing with all variants (is_default=True)
+    
+    If locale is None, the listing applies to all locales.
+    If locale is set, the listing is locale-specific.
+    """
+    product = models.ForeignKey(
+        "catalog.Product",
+        on_delete=models.CASCADE,
+        related_name="channel_listings",
+        null=True,
+        blank=True,
+        help_text="Product for this listing. If null, will be auto-assigned when variants are added.",
+    )
+    channel = models.ForeignKey(
+        Channel,
+        on_delete=models.CASCADE,
+        related_name="product_listings",
+    )
+    locale = models.ForeignKey(
+        "content.Locale",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="channel_listings",
+    )
+    name = models.CharField(max_length=200, blank=True, help_text="Optional label like 'eBay – split by color'")
+    is_default = models.BooleanField(
+        default=True,
+        help_text="Whether this is the default listing for this product+channel+locale",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            # Only one default listing per product+channel+locale (if product is set)
+            models.UniqueConstraint(
+                fields=["product", "channel", "locale"],
+                condition=models.Q(is_default=True, product__isnull=False),
+                name="uniq_default_channel_listing",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["product", "channel", "locale"], name="idx_channel_listing_scope"),
+            models.Index(fields=["channel", "is_default"], name="idx_channel_listing_default"),
+        ]
+        ordering = ["product", "channel", "locale", "-is_default", "name"]
+
+    def __str__(self) -> str:
+        locale_str = f" {self.locale.code}" if self.locale else ""
+        name_str = f" - {self.name}" if self.name else ""
+        default_str = " (default)" if self.is_default else ""
+        product_str = self.product.code if self.product else "No Product"
+        return f"{product_str} @ {self.channel.code}{locale_str}{name_str}{default_str}"
+
+
 class ChannelListingMap(models.Model):
+    """
+    Maps a variant to a channel listing (listing group).
+    
+    This replaces/supplements the simple (variant, channel) mapping by adding
+    a listing_id field to support multiple listings per product+channel.
+    
+    For backward compatibility, listing_id is nullable. If null, it represents
+    a variant inclusion without a specific listing group.
+    """
+    listing = models.ForeignKey(
+        ChannelListing,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="variant_maps",
+        help_text="The listing group this variant belongs to (null = no specific listing)",
+    )
     variant = models.ForeignKey("catalog.Variant", on_delete=models.CASCADE, related_name="channel_listings")
     channel = models.ForeignKey(Channel, on_delete=models.CASCADE, related_name="variant_listings")
     external_id = models.CharField(max_length=120, blank=True)
@@ -576,10 +660,21 @@ class ChannelListingMap(models.Model):
 
     class Meta:
         constraints = [
+            # Keep old constraint for backward compatibility
             models.UniqueConstraint(
                 fields=["variant", "channel"],
                 name="uniq_channel_listing_variant_channel",
-            )
+            ),
+            # New constraint: one variant per listing
+            models.UniqueConstraint(
+                fields=["listing", "variant"],
+                condition=models.Q(listing__isnull=False),
+                name="uniq_listing_variant",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["listing"], name="idx_clm_listing"),
+            models.Index(fields=["variant", "channel"], name="idx_clm_scope"),
         ]
 
     def __str__(self) -> str:

@@ -21,6 +21,13 @@ export default defineConfig(({ mode }) => {
       hmr: {
         overlay: false,
       },
+      // Proxy /api/v1 to Django so login and API work with VITE_API_BASE_URL=/api/v1
+      proxy: {
+        "/api": {
+          target: process.env.VITE_API_PROXY_TARGET || "http://127.0.0.1:8000",
+          changeOrigin: true,
+        },
+      },
     },
     plugins,
     resolve: {

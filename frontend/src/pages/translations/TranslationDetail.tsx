@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Check, Loader2, Save, X, RefreshCw, Clock, CheckCircle, AlertCircle, Play, Info, Pencil } from 'lucide-react';
+import { ArrowLeft, Check, Loader2, Save, X, RefreshCw, Clock, CheckCircle, AlertCircle, Play, Info, Pencil, Download } from 'lucide-react';
 import { PageHeader } from '@/components/PageHeader';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -14,6 +14,7 @@ import {
   getProductTranslation,
   getTranslationTask,
   getTranslationTaskResults,
+  getTranslationExportUrl,
   updateProductTranslation,
   retryTranslationTask,
   updateTranslation,
@@ -292,6 +293,15 @@ export default function TranslationDetail() {
                   <Play className="w-4 h-4 mr-2" />
                 )}
                 Retry
+              </Button>
+            )}
+            {task.status === 'done' && (
+              <Button 
+                variant="outline"
+                onClick={() => window.open(getTranslationExportUrl(task.id), '_blank')}
+              >
+                <Download className="w-4 h-4 mr-2" />
+                Export Excel ({task.locale})
               </Button>
             )}
             {productTranslation && (

@@ -1,4 +1,5 @@
 from django.db import models
+from django.db.models import Q
 from django.utils import timezone
 
 from catalog.models import Attribute, AttributeValue, Product, ProductType, ProductAttributeValue
@@ -166,6 +167,60 @@ class ProductTypeSynonym(models.Model):
     def __str__(self) -> str:
         scope = self.channel.code if self.channel else "any"
         return f"{self.product_type.code} {self.locale.code} [{scope}] {self.term}"
+
+
+class ProductHookTerm(models.Model):
+    """
+    Hook term for a product (group of variants), per locale/channel.
+    Used in title generation: when resolving the hook part, these terms are preferred
+    over keyword-map-derived suggestions. Order by priority (higher = used first).
+    """
+    product = models.ForeignKey(
+        Product,
+        on_delete=models.CASCADE,
+        related_name="hook_terms",
+    )
+    locale = models.ForeignKey(
+        Locale,
+        on_delete=models.PROTECT,
+        related_name="product_hook_terms",
+    )
+    channel = models.ForeignKey(
+        Channel,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="product_hook_terms",
+    )
+    term = models.CharField(max_length=255)
+    priority = models.IntegerField(default=0, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["product", "locale", "term"],
+                condition=Q(channel__isnull=True),
+                name="uq_producthookterm_product_locale_term_channel_null",
+            ),
+            models.UniqueConstraint(
+                fields=["product", "locale", "channel", "term"],
+                condition=Q(channel__isnull=False),
+                name="uq_producthookterm_product_locale_channel_term",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["product", "locale", "channel"],
+                name="idx_producthookterm_lookup",
+            ),
+        ]
+        ordering = ["-priority", "id"]
+
+    def __str__(self) -> str:
+        scope = self.channel.code if self.channel else "any"
+        return f"Product {self.product_id} [{self.locale.code}] [{scope}] {self.term}"
 
 
 class AttributeValueI18n(models.Model):
