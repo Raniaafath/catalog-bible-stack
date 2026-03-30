@@ -22,6 +22,11 @@ import {
   GripVertical,
   Type,
   Link2,
+  FileDown,
+  Eye,
+  Save,
+  Image as ImageIcon,
+  Unlink,
 } from 'lucide-react';
 import { PageHeader } from '@/components/PageHeader';
 import { Button } from '@/components/ui/button';
@@ -53,6 +58,9 @@ import {
   setListingAxes,
   moveVariantsToListing,
   removeVariantsFromListing,
+  previewUnmapAll,
+  unmapAllFromListing,
+  type UnmapAllPreview,
   updateChannelListing,
   getAvailableVariantsForListing,
   getLocales,
@@ -70,6 +78,7 @@ import {
   getProductHeadSelection,
   setProductHeadSelection,
   clearProductHeadSelection,
+  getTitleAiOptions,
   ChannelListingDetail,
   ListingDifferences,
   AvailableVariantForListing,
@@ -84,10 +93,15 @@ import {
   updateVariantAttributeValue,
   deleteVariantAttributeValue,
   createTranslationTask,
+  contentPreviewFull,
+  DESCRIPTION_AI_MODELS,
+  saveContentSelection,
+  type ContentPreviewFullResponse,
 } from '@/lib/api';
 import { getApiErrorMessage } from '@/lib/api';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
+import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
 
@@ -126,6 +140,9 @@ export default function GroupDetail() {
   const [showEditDialog, setShowEditDialog] = useState(false);
   const [selectedVariantIds, setSelectedVariantIds] = useState<number[]>([]);
   const [selectedAxes, setSelectedAxes] = useState<number[]>([]);
+  const [showUnmapAllDialog, setShowUnmapAllDialog] = useState(false);
+  const [unmapAllPreview, setUnmapAllPreview] = useState<UnmapAllPreview | null>(null);
+  const [unmapAllPreviewLoading, setUnmapAllPreviewLoading] = useState(false);
   
   // Edit form state
   const [editName, setEditName] = useState('');
@@ -134,18 +151,37 @@ export default function GroupDetail() {
   // Title generation state
   const [selectedLocale, setSelectedLocale] = useState('');
   const [selectedTemplate, setSelectedTemplate] = useState<number | null>(null);
+  const [improveListingTitles, setImproveListingTitles] = useState(true);
+  const [listingTitleAiModel, setListingTitleAiModel] = useState('');
+  const [listingTitleAiInstructions, setListingTitleAiInstructions] = useState('');
+  const [listingTitleDefaultsApplied, setListingTitleDefaultsApplied] = useState(false);
   const [addVariantsSearch, setAddVariantsSearch] = useState('');
   const [detailsVariantId, setDetailsVariantId] = useState<number | null>(null);
   const [lastUntranslatedValues, setLastUntranslatedValues] = useState<Array<{ attribute_value_id: number; code: string; attr_code: string; attribute_id?: number }> | null>(null);
   const [editingTitleVariantId, setEditingTitleVariantId] = useState<number | null>(null);
   const [editingTitleValue, setEditingTitleValue] = useState('');
+  const [descPreviewVariantId, setDescPreviewVariantId] = useState<number | ''>('');
+  const [descPreviewResult, setDescPreviewResult] = useState<ContentPreviewFullResponse | null>(null);
+  const [descModel, setDescModel] = useState('gpt-4o-mini');
+  const [descInstructions, setDescInstructions] = useState('');
 
   // Fetch listing details
   const { data: listing, isLoading, error } = useQuery({
     queryKey: ['channel-listing', listingId],
     queryFn: () => getChannelListing(listingId),
     enabled: !!listingId,
+    retry: false,
   });
+
+  // Auto-redirect to /groups if listing not found (404)
+  useEffect(() => {
+    if (error) {
+      const status = (error as { response?: { status?: number } })?.response?.status;
+      if (status === 404) {
+        navigate('/groups', { replace: true });
+      }
+    }
+  }, [error, navigate]);
 
   // Fetch differences
   const { data: differences, isLoading: differencesLoading } = useQuery({
@@ -161,12 +197,35 @@ export default function GroupDetail() {
     enabled: showAddVariantsDialog && !!listingId,
   });
   
-  // Fetch locales for title generation
+  // Fetch locales for title generation and description tab
   const { data: locales } = useQuery({
     queryKey: ['locales'],
     queryFn: getLocales,
+    enabled: activeTab === 'titles' || activeTab === 'description',
+  });
+  const { data: titleAiOptions } = useQuery({
+    queryKey: ['title-ai-options'],
+    queryFn: getTitleAiOptions,
     enabled: activeTab === 'titles',
   });
+
+  const titleAiModels = titleAiOptions?.title_ai_models?.length
+    ? titleAiOptions.title_ai_models
+    : ['gpt-4o', 'gpt-4o-mini'];
+  const defaultTitleAiModel = titleAiOptions?.default_title_ai_model || titleAiModels[0] || 'gpt-4o';
+  const defaultTitleAiInstructions = titleAiOptions?.default_title_ai_instructions || '';
+
+  useEffect(() => {
+    if (listingTitleDefaultsApplied || !titleAiOptions) return;
+    setListingTitleAiModel((prev) => prev || defaultTitleAiModel);
+    setListingTitleAiInstructions((prev) => prev || defaultTitleAiInstructions);
+    setListingTitleDefaultsApplied(true);
+  }, [
+    listingTitleDefaultsApplied,
+    titleAiOptions,
+    defaultTitleAiModel,
+    defaultTitleAiInstructions,
+  ]);
   
   // Product type attributes (to show which attributes/values are translatable)
   const { data: productTypeAttributes } = useQuery({
@@ -392,6 +451,41 @@ export default function GroupDetail() {
     },
   });
 
+  // Unmap all mutation
+  const unmapAllMutation = useMutation({
+    mutationFn: () => unmapAllFromListing(listingId),
+    onSuccess: (data) => {
+      toast({
+        title: 'Listing cleared',
+        description: `${data.deleted_maps} variant mapping(s) removed.`,
+      });
+      setShowUnmapAllDialog(false);
+      setUnmapAllPreview(null);
+      queryClient.invalidateQueries({ queryKey: ['channel-listing', listingId] });
+      queryClient.invalidateQueries({ queryKey: ['listing-differences', listingId] });
+    },
+    onError: (error: any) => {
+      toast({
+        title: 'Error',
+        description: error.response?.data?.detail || 'Failed to unmap variants',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const handleOpenUnmapAll = async () => {
+    setUnmapAllPreviewLoading(true);
+    setShowUnmapAllDialog(true);
+    try {
+      const preview = await previewUnmapAll(listingId);
+      setUnmapAllPreview(preview);
+    } catch {
+      setUnmapAllPreview(null);
+    } finally {
+      setUnmapAllPreviewLoading(false);
+    }
+  };
+
   // Set axes mutation
   const setAxesMutation = useMutation({
     mutationFn: (attributeIds: number[]) =>
@@ -448,6 +542,9 @@ export default function GroupDetail() {
     mutationFn: () => generateListingTitles(listingId, {
       locale_code: selectedLocale,
       template_id: selectedTemplate || undefined,
+      improve_title: improveListingTitles,
+      title_ai_model: improveListingTitles ? listingTitleAiModel : undefined,
+      title_ai_instructions: improveListingTitles ? listingTitleAiInstructions : undefined,
     }),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['listing-generated-titles', listingId, selectedLocale] });
@@ -463,6 +560,50 @@ export default function GroupDetail() {
       toast({
         title: 'Error',
         description: error.response?.data?.detail || 'Failed to generate titles',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const descPreviewMutation = useMutation({
+    mutationFn: (opts: {
+      variant_id: number;
+      description_model?: string;
+      description_instructions?: string;
+    }) => {
+      const payload: Parameters<typeof contentPreviewFull>[0] = {
+        variant_id: opts.variant_id,
+        locale_code: selectedLocale,
+        channel_code: listing!.channel_code,
+        include_descriptions: true,
+      };
+      if (opts.description_instructions?.trim()) {
+        payload.description_model = opts.description_model || 'gpt-4o-mini';
+        payload.description_instructions = opts.description_instructions.trim();
+      }
+      return contentPreviewFull(payload);
+    },
+    onSuccess: (data) => {
+      setDescPreviewResult(data);
+    },
+    onError: (error: any) => {
+      toast({
+        title: 'Preview failed',
+        description: error.response?.data?.detail || getApiErrorMessage(error),
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const saveContentMutation = useMutation({
+    mutationFn: saveContentSelection,
+    onSuccess: () => {
+      toast({ title: 'Content saved', description: 'Description and bullets saved as draft. Export from Content → Generated titles.' });
+    },
+    onError: (err: unknown) => {
+      toast({
+        title: 'Save failed',
+        description: err instanceof Error ? err.message : 'Could not save content',
         variant: 'destructive',
       });
     },
@@ -604,10 +745,10 @@ export default function GroupDetail() {
       <div className="page-container">
         <PageHeader
           title={listing.name || `${listing.product_code} @ ${listing.channel_code}`}
-          description={`Marketplace listing group for ${listing.channel_code}`}
+          description={`Marketplace listing & variation axes for ${listing.channel_code}`}
           breadcrumbs={[
             { label: 'Dashboard', href: '/' },
-            { label: 'Listing Groups', href: '/groups' },
+            { label: 'Marketplace listings', href: '/groups' },
             { label: listing.name || listing.product_code || `#${listing.id}` },
           ]}
           actions={
@@ -618,7 +759,7 @@ export default function GroupDetail() {
               </Button>
               <Button variant="outline" onClick={() => navigate('/groups')}>
                 <ArrowLeft className="w-4 h-4 mr-2" />
-                Back
+                Back to listings
               </Button>
             </div>
           }
@@ -681,11 +822,19 @@ export default function GroupDetail() {
             </TabsTrigger>
             <TabsTrigger value="axes">
               <Settings2 className="w-4 h-4 mr-2" />
-              Variation Axes
+              Axes
             </TabsTrigger>
             <TabsTrigger value="titles">
               <Languages className="w-4 h-4 mr-2" />
-              Generate Titles
+              Titles
+            </TabsTrigger>
+            <TabsTrigger value="description">
+              <FileDown className="w-4 h-4 mr-2" />
+              Description
+            </TabsTrigger>
+            <TabsTrigger value="image-template">
+              <ImageIcon className="w-4 h-4 mr-2" />
+              Image Template
             </TabsTrigger>
           </TabsList>
 
@@ -699,10 +848,12 @@ export default function GroupDetail() {
                     These variants will be grouped together on {listing.channel_code}
                   </CardDescription>
                 </div>
-                <Button onClick={() => setShowAddVariantsDialog(true)}>
-                  <Plus className="w-4 h-4 mr-2" />
-                  Add Variants
-                </Button>
+                <div className="flex gap-2">
+                  <Button onClick={() => setShowAddVariantsDialog(true)}>
+                    <Plus className="w-4 h-4 mr-2" />
+                    Add Variants
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent>
                 {listing.variants.length === 0 ? (
@@ -768,9 +919,9 @@ export default function GroupDetail() {
           <TabsContent value="axes">
             <Card>
               <CardHeader>
-                <CardTitle>Variation Axes</CardTitle>
+                <CardTitle>Variation axes (per marketplace)</CardTitle>
                 <CardDescription>
-                  Select which attributes define variations for this listing group (e.g. Color, Size).
+                  Select which attributes define variations for this marketplace listing (e.g. Color, Size).
                   When set here, they override channel and product-family defaults for this listing.
                 </CardDescription>
               </CardHeader>
@@ -1155,7 +1306,7 @@ export default function GroupDetail() {
                               <SelectContent>
                                 {templatesData.templates.map((template) => (
                                   <SelectItem key={template.id} value={template.id.toString()}>
-                                    Template v{template.version} - {template.part_count} parts ({template.locale})
+                                    Template v{template.version} - {template.part_count} parts ({template.locale}){template.status !== 'active' ? ` · ${template.status}` : ''}
                                   </SelectItem>
                                 ))}
                               </SelectContent>
@@ -1171,7 +1322,7 @@ export default function GroupDetail() {
                             <Alert>
                               <AlertCircle className="h-4 w-4" />
                               <AlertDescription>
-                                No active templates found for {listing.product_code} on {listing.channel_code} in {selectedLocale}.
+                                No templates found for {listing.product_code} on {listing.channel_code} in {selectedLocale}.
                               </AlertDescription>
                             </Alert>
                             <div className="flex flex-wrap gap-2">
@@ -1212,6 +1363,69 @@ export default function GroupDetail() {
                     )}
 
                     {/* Generate Button */}
+                    <div className={`rounded-lg border-2 p-4 space-y-3 transition-colors ${improveListingTitles ? 'border-primary bg-primary/5' : 'border-dashed border-muted-foreground/30 hover:border-muted-foreground/60'}`}>
+                      <div className="flex items-center justify-between gap-4">
+                        <div>
+                          <Label className="flex items-center gap-2 text-sm font-semibold cursor-pointer" onClick={() => setImproveListingTitles(!improveListingTitles)}>
+                            <Languages className={`w-4 h-4 ${improveListingTitles ? 'text-primary' : 'text-muted-foreground'}`} />
+                            AI title polish (SEO)
+                            {improveListingTitles && <span className="text-xs font-normal text-primary">— enabled</span>}
+                          </Label>
+                          <p className="text-xs text-muted-foreground mt-0.5">
+                            Improve fluency and SEO phrasing while preserving product facts and listing context.
+                          </p>
+                        </div>
+                        <Switch checked={improveListingTitles} onCheckedChange={setImproveListingTitles} />
+                      </div>
+
+                      {improveListingTitles && (
+                        <div className="space-y-3 pt-1">
+                          <div className="space-y-1.5">
+                            <Label className="text-xs">AI model</Label>
+                            <Select value={listingTitleAiModel} onValueChange={setListingTitleAiModel}>
+                              <SelectTrigger className="w-full md:w-56 h-8 text-xs">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {titleAiModels.map((m) => (
+                                  <SelectItem key={m} value={m} className="text-xs">{m}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <div className="space-y-1.5">
+                            <Label className="text-xs">Instructions (optional)</Label>
+                            <Input
+                              value={listingTitleAiInstructions}
+                              onChange={(e) => setListingTitleAiInstructions(e.target.value)}
+                              placeholder="SEO guidance for title polish"
+                              className="h-8 text-xs"
+                            />
+                            <div className="flex items-center gap-2 pt-1">
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="h-7 text-xs"
+                                onClick={() => setListingTitleAiInstructions(defaultTitleAiInstructions)}
+                              >
+                                Use SEO preset
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 text-xs"
+                                onClick={() => setListingTitleAiInstructions('')}
+                              >
+                                Clear
+                              </Button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
                     <div className="flex justify-end pt-4 border-t">
                       <Button
                         onClick={() => generateTitlesMutation.mutate()}
@@ -1455,6 +1669,238 @@ export default function GroupDetail() {
               </Card>
             )}
           </TabsContent>
+
+          {/* Description Tab */}
+          <TabsContent value="description">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <FileDown className="w-5 h-5" />
+                  Generate description from attributes
+                </CardTitle>
+                <CardDescription>
+                  Preview a description built from this listing&apos;s variant attribute values. Choose a variant and language to see the generated description and the attribute values used.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                {listing.variants.length === 0 ? (
+                  <Alert>
+                    <AlertCircle className="h-4 w-4" />
+                    <AlertDescription>
+                      No variants in this listing. Add variants in the Variants tab first.
+                    </AlertDescription>
+                  </Alert>
+                ) : (
+                  <>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <Label>Target language</Label>
+                        <p className="text-xs text-muted-foreground">
+                          Attribute values in the description will be shown in this language.
+                        </p>
+                        <Select value={selectedLocale} onValueChange={setSelectedLocale}>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select language..." />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {locales?.results?.map((loc: { code: string; name?: string }) => (
+                              <SelectItem key={loc.code} value={loc.code}>
+                                {loc.name || loc.code} ({loc.code})
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Variant</Label>
+                        <p className="text-xs text-muted-foreground">
+                          Choose a variant to preview its description.
+                        </p>
+                        <Select
+                          value={descPreviewVariantId === '' ? '' : String(descPreviewVariantId)}
+                          onValueChange={(v) => setDescPreviewVariantId(v === '' ? '' : parseInt(v, 10))}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select variant..." />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {listing.variants.map((v) => (
+                              <SelectItem key={v.id} value={String(v.id)}>
+                                {v.sku || `#${v.id}`}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+
+                    <div className="space-y-4 rounded-lg border bg-muted/30 p-4">
+                      <Label className="text-sm font-medium">AI options (optional)</Label>
+                      <p className="text-xs text-muted-foreground">
+                        Use AI to improve the description. Leave instructions blank to use the template-based description only.
+                      </p>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <Label className="text-xs">Model</Label>
+                          <Select value={descModel} onValueChange={setDescModel}>
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {DESCRIPTION_AI_MODELS.map((m) => (
+                                <SelectItem key={m.value} value={m.value}>
+                                  {m.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-2 sm:col-span-2">
+                          <Label className="text-xs">Instructions for the model</Label>
+                          <Textarea
+                            value={descInstructions}
+                            onChange={(e) => setDescInstructions(e.target.value)}
+                            placeholder="e.g. Make it more technical. Emphasize durability. Keep under 150 words."
+                            rows={3}
+                            className="resize-none"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    <Button
+                      onClick={() =>
+                        typeof descPreviewVariantId === 'number' &&
+                        descPreviewMutation.mutate({
+                          variant_id: descPreviewVariantId,
+                          description_model: descModel,
+                          description_instructions: descInstructions,
+                        })
+                      }
+                      disabled={
+                        !selectedLocale ||
+                        !listing.channel_code ||
+                        descPreviewVariantId === '' ||
+                        descPreviewMutation.isPending
+                      }
+                    >
+                      {descPreviewMutation.isPending ? (
+                        <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                      ) : (
+                        <Eye className="w-4 h-4 mr-2" />
+                      )}
+                      Load attributes & preview description
+                    </Button>
+
+                    {descPreviewResult && (
+                      <div className="space-y-6 pt-4 border-t">
+                        <div className="space-y-2">
+                          <Label>Generated title</Label>
+                          <div className="p-4 bg-muted rounded-lg text-sm">
+                            {descPreviewResult.title || '—'}
+                          </div>
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Generated description</Label>
+                          <div className="p-4 bg-muted rounded-lg text-sm whitespace-pre-wrap">
+                            {descPreviewResult.description || '—'}
+                          </div>
+                        </div>
+                        {Array.isArray(descPreviewResult.bullets) && descPreviewResult.bullets.length > 0 && (
+                          <div className="space-y-2">
+                            <Label>Bullets</Label>
+                            <ul className="list-disc list-inside p-4 bg-muted rounded-lg text-sm space-y-1">
+                              {descPreviewResult.bullets.map((b, i) => (
+                                <li key={i}>{b}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        <div className="space-y-2">
+                          <Label>Attribute values used for this variant</Label>
+                          <p className="text-sm text-muted-foreground">
+                            These attributes and values were used to build the description above.
+                          </p>
+                          {descPreviewResult.features && descPreviewResult.features.length > 0 ? (
+                            <div className="rounded-md border">
+                              <Table>
+                                <TableHeader>
+                                  <TableRow>
+                                    <TableHead className="w-40">Attribute</TableHead>
+                                    <TableHead>Value</TableHead>
+                                    <TableHead className="w-32 text-muted-foreground">Source</TableHead>
+                                  </TableRow>
+                                </TableHeader>
+                                <TableBody>
+                                  {descPreviewResult.features.map((f, i) => (
+                                    <TableRow key={i}>
+                                      <TableCell className="font-mono text-sm">{f.attribute_code}</TableCell>
+                                      <TableCell>{f.value}</TableCell>
+                                      <TableCell className="text-muted-foreground text-sm">
+                                        {f.source ?? '—'}
+                                      </TableCell>
+                                    </TableRow>
+                                  ))}
+                                </TableBody>
+                              </Table>
+                            </div>
+                          ) : (
+                            <p className="text-sm text-muted-foreground py-2">
+                              No attribute values for this variant in this locale/channel.
+                            </p>
+                          )}
+                        </div>
+                        <div className="flex flex-wrap gap-2 pt-2">
+                          <Button
+                            onClick={() => {
+                              if (
+                                typeof descPreviewVariantId !== 'number' ||
+                                !selectedLocale ||
+                                !listing?.channel_code ||
+                                !descPreviewResult
+                              )
+                                return;
+                              saveContentMutation.mutate({
+                                variant_id: descPreviewVariantId,
+                                locale_code: selectedLocale,
+                                channel_code: listing.channel_code,
+                                description: descPreviewResult.description ?? '',
+                                bullets: Array.isArray(descPreviewResult.bullets) ? descPreviewResult.bullets : [],
+                              });
+                            }}
+                            disabled={
+                              !selectedLocale ||
+                              !listing?.channel_code ||
+                              !descPreviewResult ||
+                              saveContentMutation.isPending
+                            }
+                          >
+                            {saveContentMutation.isPending ? (
+                              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                            ) : (
+                              <Save className="w-4 h-4 mr-2" />
+                            )}
+                            Save content (draft)
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Image Template Tab */}
+          <TabsContent value="image-template">
+            <Card className="border-dashed">
+              <CardContent className="py-12 text-center text-muted-foreground">
+                <ImageIcon className="w-12 h-12 mx-auto mb-3 opacity-40" />
+                <p className="font-medium">Image template</p>
+                <p className="text-sm mt-1">Define image selection rules and output specs per channel. Coming soon.</p>
+              </CardContent>
+            </Card>
+          </TabsContent>
         </Tabs>
       </div>
 
@@ -1578,13 +2024,98 @@ export default function GroupDetail() {
         </DialogContent>
       </Dialog>
 
+      {/* Unmap All Confirmation Dialog */}
+      <Dialog
+        open={showUnmapAllDialog}
+        onOpenChange={(open) => {
+          if (!open) { setShowUnmapAllDialog(false); setUnmapAllPreview(null); }
+        }}
+      >
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-destructive">
+              <Unlink className="w-5 h-5" />
+              Unmap all variants — dangerous action
+            </DialogTitle>
+            <DialogDescription>
+              This will permanently remove all variant mappings from this listing.
+              The listing group itself is kept, but it will be empty.
+              This cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+
+          {unmapAllPreviewLoading ? (
+            <div className="flex items-center justify-center py-6">
+              <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : unmapAllPreview ? (
+            <div className="space-y-3">
+              <Alert variant="destructive">
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription>
+                  <strong>{unmapAllPreview.variant_count} variant{unmapAllPreview.variant_count !== 1 ? 's' : ''}</strong> will be unmapped
+                  {unmapAllPreview.product_code ? ` from product ${unmapAllPreview.product_code}` : ''}{' '}
+                  on channel <strong>{unmapAllPreview.channel_code}</strong>.
+                </AlertDescription>
+              </Alert>
+              {unmapAllPreview.variants.length > 0 && (
+                <div className="rounded-md border max-h-48 overflow-y-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="text-xs">ID</TableHead>
+                        <TableHead className="text-xs">SKU</TableHead>
+                        <TableHead className="text-xs">Title</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {unmapAllPreview.variants.map((v) => (
+                        <TableRow key={v.id}>
+                          <TableCell className="text-xs text-muted-foreground">{v.id}</TableCell>
+                          <TableCell className="text-xs font-mono">{v.sku || '—'}</TableCell>
+                          <TableCell className="text-xs truncate max-w-[200px]">{v.source_title || '—'}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">Could not load preview.</p>
+          )}
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => { setShowUnmapAllDialog(false); setUnmapAllPreview(null); }}
+              disabled={unmapAllMutation.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => unmapAllMutation.mutate()}
+              disabled={unmapAllPreviewLoading || unmapAllMutation.isPending || !unmapAllPreview}
+            >
+              {unmapAllMutation.isPending ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <Unlink className="w-4 h-4 mr-2" />
+              )}
+              Unmap all {unmapAllPreview ? `(${unmapAllPreview.variant_count})` : ''}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Edit Listing Dialog */}
       <Dialog open={showEditDialog} onOpenChange={setShowEditDialog}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Edit Listing Group</DialogTitle>
+            <DialogTitle>Edit marketplace listing</DialogTitle>
             <DialogDescription>
-              Update the listing name and settings.
+              Update the marketplace listing name and settings.
             </DialogDescription>
           </DialogHeader>
 

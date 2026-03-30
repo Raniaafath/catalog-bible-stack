@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Plus, Edit, Trash2, Loader2, Languages } from 'lucide-react';
+import { Plus, Edit, Trash2, Loader2, Languages, Type } from 'lucide-react';
 import { PageHeader } from '@/components/PageHeader';
 import { Button } from '@/components/ui/button';
 import { DataTable, Column } from '@/components/DataTable';
@@ -101,14 +101,18 @@ export default function AttributesList() {
 
   const handleBulkToggleTranslatable = (value: boolean) => {
     if (selectedIds.length === 0) {
-      toast({
-        title: 'No attributes selected',
-        description: 'Please select at least one attribute.',
-        variant: 'destructive',
-      });
+      toast({ title: 'No attributes selected', description: 'Please select at least one attribute.', variant: 'destructive' });
       return;
     }
     bulkUpdateMutation.mutate({ ids: selectedIds, updates: { is_value_translatable: value } });
+  };
+
+  const handleBulkToggleUseInTitle = (value: boolean) => {
+    if (selectedIds.length === 0) {
+      toast({ title: 'No attributes selected', description: 'Please select at least one attribute.', variant: 'destructive' });
+      return;
+    }
+    bulkUpdateMutation.mutate({ ids: selectedIds, updates: { use_in_title: value } });
   };
 
   const columns: Column<Attribute>[] = [
@@ -160,6 +164,22 @@ export default function AttributesList() {
           {item.is_value_translatable && (
             <Languages className="w-4 h-4 text-primary" />
           )}
+        </div>
+      ),
+    },
+    {
+      key: 'use_in_title',
+      header: 'Use in title',
+      render: (item) => (
+        <div className="flex items-center gap-2">
+          <Checkbox
+            checked={item.use_in_title !== false}
+            onCheckedChange={(checked) => {
+              bulkUpdateMutation.mutate({ ids: [item.id], updates: { use_in_title: Boolean(checked) } });
+            }}
+            disabled={bulkUpdateMutation.isPending}
+          />
+          {item.use_in_title !== false && <Type className="w-4 h-4 text-primary" />}
         </div>
       ),
     },
@@ -251,6 +271,23 @@ export default function AttributesList() {
                   disabled={bulkUpdateMutation.isPending}
                 >
                   Mark as Non-translatable
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handleBulkToggleUseInTitle(true)}
+                  disabled={bulkUpdateMutation.isPending}
+                >
+                  <Type className="w-4 h-4 mr-2" />
+                  Use in title
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handleBulkToggleUseInTitle(false)}
+                  disabled={bulkUpdateMutation.isPending}
+                >
+                  Exclude from title
                 </Button>
                 <span className="text-sm text-muted-foreground">{selectedIds.length} selected</span>
               </>

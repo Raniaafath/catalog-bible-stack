@@ -8,6 +8,7 @@ const statusBadgeVariants = cva(
     variants: {
       status: {
         pending: 'bg-status-pending-bg text-status-pending-foreground',
+        queued: 'bg-status-pending-bg text-status-pending-foreground',
         uploaded: 'bg-status-pending-bg text-status-pending-foreground',
         processing: 'bg-status-processing-bg text-status-processing-foreground',
         parsed: 'bg-status-processing-bg text-status-processing-foreground',
@@ -38,6 +39,7 @@ const statusBadgeVariants = cva(
 
 const statusIcons = {
   pending: Clock,
+  queued: Clock,
   uploaded: Clock,
   processing: Loader2,
   parsed: Loader2,
@@ -56,6 +58,7 @@ const statusIcons = {
 
 const statusLabels: Record<string, string> = {
   pending: 'Pending',
+  queued: 'Queued',
   uploaded: 'Uploaded',
   processing: 'Processing',
   parsed: 'Parsed',

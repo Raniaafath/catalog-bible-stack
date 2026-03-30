@@ -8,6 +8,7 @@ product-type synonyms; hook = product-specific attributes). Terms are in the run
 """
 from __future__ import annotations
 
+import re
 from typing import Dict, List, Optional
 
 from django.db.models import Count, Max, Q
@@ -15,6 +16,78 @@ from django.db.models import Count, Max, Q
 from catalog.models import Product, ProductAttributeValue, Variant
 from content.models import AttributeI18n, ProductHookTerm, ProductTypeSynonym, SynonymStatus
 from kw.models import Keyword, Metric, PlannerRun, ProductKeywordMap
+from kw.services.product_keyword_mapper import _is_size_attribute
+
+# Pattern for purely numeric / dimension-only terms (e.g. "80", "60x80", "60 cm", "80x80x15")
+_DIMENSION_TERM_RE = re.compile(
+    r"^[\d][\d\s\.,x×*\-]*(?:cm|mm|m\b|kg|g\b|l\b|ml|inch|\")?$",
+    re.IGNORECASE,
+)
+
+# Pattern to extract text prefix before first digit — for fallback head term extraction.
+# E.g. "duschwanne 80 x 90" → "duschwanne", "duschtasse 60 x 80" → "duschtasse".
+_BEFORE_DIGIT_RE = re.compile(r"^([^\d]+?)\s+\d", re.UNICODE)
+
+# Prefixes that identify operational/non-title attributes regardless of language.
+# Any attribute whose code starts with one of these is excluded from hook term suggestions.
+_NON_HOOK_PREFIXES: tuple = (
+    # Warranty / guarantee (EN/FR/DE/ES/IT/PT/NL)
+    "warranty", "garantie", "garantia", "garanzia", "garantia", "garantie", "garanti",
+    # Stock / inventory / quantity
+    "stock", "inventory", "bestand", "lagerbestand", "inventaire", "existencias",
+    "qty", "quantity", "quantite", "quantité", "menge", "cantidad", "quantita",
+    # Weight / mass
+    "weight", "gewicht", "poids", "peso", "peso", "gewicht",
+    "mass", "masse",
+    # Price / cost
+    "price", "preis", "prix", "precio", "prezzo", "prijs",
+    # Rating / review count
+    "rating", "review", "bewertung", "note", "nota",
+)
+
+# Suffixes that identify operational attributes regardless of language.
+_NON_HOOK_SUFFIXES: tuple = (
+    # Any unit-quantity attribute
+    "_qty", "_menge", "_count", "_anzahl", "_nombre", "_numero", "_quantite",
+    # Time/duration (warranty years, etc.)
+    "_jahre", "_years", "_ans", "_anos", "_anni", "_jaren", "_mois", "_months",
+    # Weight units
+    "_kg", "_g", "_lb", "_oz",
+)
+
+
+def _is_dimension_only_term(term: str) -> bool:
+    """Return True if the term is purely numeric or a dimension (e.g. '80', '60x80', '60 cm')."""
+    return bool(_DIMENSION_TERM_RE.match(term.strip()))
+
+
+def _keyword_text_prefix(term: str) -> str:
+    """Extract text before the first digit in a keyword term.
+    E.g. 'duschwanne 80 x 90' → 'duschwanne', 'duschtasse 60 x 80' → 'duschtasse'.
+    Returns '' if no digit found or the term starts with a digit.
+    """
+    m = _BEFORE_DIGIT_RE.match(term.strip())
+    return m.group(1).strip() if m else ""
+
+
+def _is_non_hook_attribute(code) -> bool:
+    """Return True if this attribute should NOT produce hook term suggestions.
+    Uses pattern matching so it works across any language or product type.
+    Excludes: size/dimension, warranty, stock/inventory, weight, price, rating attributes.
+    """
+    if not code:
+        return False
+    c = (code or "").strip().lower()
+    # Delegate size/dimension check to product_keyword_mapper (covers all languages via patterns)
+    if _is_size_attribute(c):
+        return True
+    # Operational attribute prefix patterns (any language)
+    if any(c.startswith(p) for p in _NON_HOOK_PREFIXES):
+        return True
+    # Operational attribute suffix patterns (any language)
+    if any(c.endswith(s) for s in _NON_HOOK_SUFFIXES):
+        return True
+    return False
 
 # Match kinds that indicate general product-type synonyms (head terms): category, label, titles.
 # We want only these for head terms—e.g. "Duschwanne", "Duschtasse", not colours or materials.
@@ -146,10 +219,16 @@ def extract_suggested_head_terms(
         term = (terms_by_id.get(kw_id) or "").strip()
         if not term:
             continue
+        # Skip purely numeric / dimension-only terms (e.g. "60", "80x80", "60 cm")
+        if _is_dimension_only_term(term):
+            continue
         norm = _normalize_term(term)
         if norm in existing_norm:
             continue
         match_kinds = data["match_kinds"]
+        # Skip terms whose only matches are pav_numeric (size/dimension values)
+        if match_kinds == {"pav_numeric"} or match_kinds <= {"pav_numeric", "attr_value_code"}:
+            continue
         has_head = bool(match_kinds & _HEAD_MATCH_KINDS)
         has_also = bool(match_kinds & _HEAD_ALSO)
         if not (has_head or has_also):
@@ -190,6 +269,49 @@ def extract_suggested_head_terms(
     )
     for x in suggested:
         del x["_sense_priority"]
+
+    # Fallback: when no title-based head terms found (e.g. product titles are in a different
+    # language than the run's locale), extract the text prefix before dimension numbers from
+    # keywords. "duschwanne 80 x 90" → "duschwanne", "duschtasse 60 x 80" → "duschtasse".
+    # Only suggest prefixes that appear in >= 2 keywords (indicates a general product-type word).
+    if not suggested:
+        prefix_map: Dict[str, Dict] = {}
+        pt = run.product_type
+        for kw_id, data in by_kw.items():
+            term = (terms_by_id.get(kw_id) or "").strip()
+            if not term or _is_dimension_only_term(term):
+                continue
+            prefix = _keyword_text_prefix(term)
+            if not prefix or len(prefix) < 3 or _is_dimension_only_term(prefix):
+                continue
+            norm_p = _normalize_term(prefix)
+            if norm_p in existing_norm:
+                continue
+            if norm_p not in prefix_map:
+                prefix_map[norm_p] = {"term": prefix, "kw_ids": set(), "product_count": 0}
+            prefix_map[norm_p]["kw_ids"].add(kw_id)
+            prefix_map[norm_p]["product_count"] = max(
+                prefix_map[norm_p]["product_count"], data["product_count"]
+            )
+        for norm_p, pdata in prefix_map.items():
+            if len(pdata["kw_ids"]) < 2:
+                continue
+            vol = max((vol_by_id.get(kid) or 0 for kid in pdata["kw_ids"]), default=0)
+            suggested.append({
+                "term": pdata["term"],
+                "keyword_id": next(iter(pdata["kw_ids"])),
+                "product_count": pdata["product_count"],
+                "match_kinds": ["keyword_prefix"],
+                "avg_searches": int(vol),
+                "product_type_id": run.product_type_id,
+                "product_type_code": getattr(pt, "code", None) or None,
+                "product_type_default_label": (getattr(pt, "default_label", None) or "").strip() or None,
+                "product_type_notes": (getattr(pt, "notes", None) or "").strip() or None,
+                "product_type_main_category": (getattr(pt, "main_category", None) or "").strip() or None,
+            })
+        if suggested:
+            suggested.sort(key=lambda x: (-x["avg_searches"], -x["product_count"], x["term"]))
+
     return suggested[:max_terms]
 
 
@@ -242,7 +364,15 @@ def extract_suggested_hook_terms(
     for pkm in qs:
         # Only suggest terms whose mapped attribute value is on this product.
         # E.g. do not suggest "schwarz" for a product that is white.
-        if pkm.attribute_value_id is not None and pkm.attribute_value_id not in product_av_ids:
+        # Skip this check for AI-mapped rows (pav_text_llm): the AI already validated
+        # the match at mapping time per-product, so the check is redundant and can
+        # incorrectly reject text-based attributes (value_text, no FK → empty product_av_ids).
+        is_ai_mapped = pkm.source == ProductKeywordMap.Source.TEXT_LLM.value
+        if (
+            not is_ai_mapped
+            and pkm.attribute_value_id is not None
+            and pkm.attribute_value_id not in product_av_ids
+        ):
             continue
         kw = pkm.keyword
         if not kw:
@@ -250,14 +380,23 @@ def extract_suggested_hook_terms(
         term = (kw.term or "").strip()
         if not term:
             continue
+        # Skip purely numeric / dimension-only terms (e.g. "60", "80x80", "60 cm")
+        if _is_dimension_only_term(term):
+            continue
         norm = _normalize_term(term)
         if norm in existing_norm or norm in head_norm:
             continue
         if pkm.source in _HOOK_EXCLUDE_SOURCE:
             continue
+        # Also exclude pav_numeric match_kind (size/dimension values matched as text)
+        if pkm.match_kind == "pav_numeric":
+            continue
         if kw.id in seen_kw:
             continue
         attr = pkm.attribute
+        # Skip non-title attributes (dimensions, warranty, stock, weight, price, thickness)
+        if attr and _is_non_hook_attribute(attr.code):
+            continue
         seen_kw[kw.id] = {
             "term": term,
             "keyword_id": kw.id,
@@ -266,6 +405,7 @@ def extract_suggested_hook_terms(
             "attribute_id": attr.id if attr else None,
             "attribute_code": attr.code if attr else None,
             "product_id": product_id,
+            "reason": (pkm.matched_text or "").strip() or None,
         }
 
     suggested = list(seen_kw.values())
@@ -304,14 +444,153 @@ def extract_suggested_hook_terms(
     return suggested
 
 
+def generate_term_reasons(
+    suggested_head: List[Dict[str, object]],
+    suggested_hook: List[Dict[str, object]],
+    product_type_label: Optional[str] = None,
+    product_type_code: Optional[str] = None,
+    model: Optional[str] = None,
+) -> tuple:
+    """
+    Use AI to generate a short reason why each suggested term qualifies as a head or hook term.
+    Head reasons explain why the keyword is a general product-category word.
+    Hook reasons are only generated for terms that don't already have a reason (non-LLM sources).
+    Returns (head_reasons, hook_reasons) as lists of Optional[str] in the same order as inputs.
+    """
+    import json
+    import os
+
+    context = product_type_label or product_type_code or "product category"
+    if product_type_code and product_type_label:
+        context = f"{product_type_label} ({product_type_code})"
+
+    # Build a flat list of items to send to AI, tracking original positions.
+    items: List[Dict[str, object]] = []
+    for i, h in enumerate(suggested_head):
+        t = (h.get("term") or "").strip()
+        if not t:
+            continue
+        match_kinds = h.get("match_kinds") or []
+        extra = ", ".join(str(m) for m in match_kinds) if match_kinds else ""
+        items.append({"type": "head", "orig_idx": i, "term": t, "extra": extra})
+
+    for i, h in enumerate(suggested_hook):
+        # Skip if the product mapping already stored an LLM reason.
+        if (h.get("reason") or "").strip():
+            continue
+        t = (h.get("term") or "").strip()
+        if not t:
+            continue
+        attr_label = (h.get("attribute_label") or h.get("attribute_code") or "").strip()
+        items.append({"type": "hook", "orig_idx": i, "term": t, "extra": attr_label})
+
+    if not items:
+        return [None] * len(suggested_head), [None] * len(suggested_hook)
+
+    effective_model = (model or "").strip() or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+
+    system_prompt = (
+        "You explain in one sentence why a product search keyword is a good head term or hook term "
+        "for SEO title generation. "
+        "HEAD terms are general category words that name the product type (e.g. 'shower tray', 'sliding door'). "
+        "HOOK terms are product differentiators: material, colour, shape, finish, etc. "
+        "Keep each reason under 15 words. Return valid JSON only."
+    )
+    lines = []
+    for j, item in enumerate(items):
+        extra_info = f" (via {item['extra']})" if item.get("extra") else ""
+        lines.append(f'{j + 1}. [{item["type"].upper()}] "{item["term"]}"{extra_info}')
+    user_prompt = (
+        f"Product category: {context}\n\n"
+        "For each keyword below explain in one short sentence why it's a good head or hook term.\n\n"
+        + "\n".join(lines)
+        + '\n\nReturn JSON only: {"reasons": ["reason1", "reason2", ...]}'
+    )
+
+    raw_response: Optional[str] = None
+
+    if effective_model.startswith("claude-"):
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if api_key:
+            try:
+                import anthropic
+                client = anthropic.Anthropic(api_key=api_key)
+                msg = client.messages.create(
+                    model=effective_model,
+                    max_tokens=600,
+                    system=system_prompt,
+                    messages=[{"role": "user", "content": user_prompt}],
+                    temperature=0,
+                )
+                raw_response = msg.content[0].text if msg.content else None
+            except Exception:
+                pass
+    elif effective_model.startswith("gemini-"):
+        api_key = os.environ.get("GOOGLE_AI_API_KEY")
+        if api_key:
+            try:
+                import google.generativeai as genai
+                genai.configure(api_key=api_key)
+                g_model = genai.GenerativeModel(
+                    model_name=effective_model,
+                    system_instruction=system_prompt,
+                    generation_config={"temperature": 0, "max_output_tokens": 600, "response_mime_type": "application/json"},
+                )
+                resp = g_model.generate_content(user_prompt)
+                raw_response = resp.text
+            except Exception:
+                pass
+    else:
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if api_key:
+            try:
+                from openai import OpenAI
+                client = OpenAI(api_key=api_key)
+                resp = client.chat.completions.create(
+                    model=effective_model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    temperature=0,
+                    max_tokens=600,
+                )
+                raw_response = resp.choices[0].message.content or None
+            except Exception:
+                pass
+
+    head_reasons: List[Optional[str]] = [None] * len(suggested_head)
+    hook_reasons: List[Optional[str]] = [None] * len(suggested_hook)
+
+    if raw_response:
+        try:
+            data = json.loads(raw_response.strip())
+            reasons = data.get("reasons") or []
+            for j, item in enumerate(items):
+                if j >= len(reasons):
+                    break
+                r = reasons[j]
+                r = (r or "").strip() or None if isinstance(r, str) else None
+                if item["type"] == "head":
+                    head_reasons[item["orig_idx"]] = r  # type: ignore[index]
+                else:
+                    hook_reasons[item["orig_idx"]] = r  # type: ignore[index]
+        except Exception:
+            pass
+
+    return head_reasons, hook_reasons
+
+
 def generate_head_term_meanings_en(
     suggested_head: List[Dict[str, object]],
     product_type_label: Optional[str] = None,
     product_type_code: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> List[Optional[str]]:
     """
-    Use AI (OpenAI) to generate a short English meaning for each suggested head term.
-    Returns a list of meaning_en in the same order as suggested_head; None or empty on failure.
+    Use AI to generate a short English meaning for each suggested head term.
+    Supports Anthropic (claude-*), Google (gemini-*), and OpenAI (default).
+    Returns a list of meaning_en in the same order as suggested_head; None on failure.
     """
     import json
     import os
@@ -319,7 +598,7 @@ def generate_head_term_meanings_en(
     if not suggested_head:
         return []
     terms_to_send = []
-    indices = []  # index in suggested_head for each term we send
+    indices: List[int] = []
     for i, h in enumerate(suggested_head):
         t = (h.get("term") or "").strip()
         if t:
@@ -328,22 +607,20 @@ def generate_head_term_meanings_en(
     if not terms_to_send:
         return [None] * len(suggested_head)
 
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        return [None] * len(suggested_head)
-    try:
-        from openai import OpenAI
-    except Exception:
-        return [None] * len(suggested_head)
+    # Determine model: prefer explicit arg, then env override, then provider-based default.
+    effective_model = (model or "").strip() or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 
-    model_name = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
     context = product_type_label or product_type_code or "product category"
     if product_type_code and product_type_label:
         context = f"{product_type_label} ({product_type_code})"
     elif product_type_code:
         context = product_type_code
 
-    prompt = (
+    system_prompt = (
+        "You provide short English meanings for product search terms. "
+        "Return valid JSON only with a 'meanings' array of strings, one per term, in the same order."
+    )
+    user_prompt = (
         f"Product type / category: {context}\n\n"
         "Below are search terms (keywords) in another language for this product type. "
         "For each term, provide a short English meaning or description (one phrase, e.g. 'shower sliding door', '90x90 shower tray'). "
@@ -353,31 +630,71 @@ def generate_head_term_meanings_en(
         + "\n\n"
         "Return valid JSON only: {\"meanings\": [\"meaning1\", \"meaning2\", ...]} in the same order as the terms."
     )
-    try:
-        client = OpenAI(api_key=api_key)
-        resp = client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You provide short English meanings for product search terms. Return valid JSON only with a 'meanings' array of strings, one per term, in the same order.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0,
-            max_tokens=800,
-        )
-        content = (resp.choices[0].message.content or "").strip()
-        data = json.loads(content)
-        raw = data.get("meanings") or []
-        if not isinstance(raw, list):
-            return [None] * len(suggested_head)
-        out = [None] * len(suggested_head)
-        for pos, idx in enumerate(indices):
-            if pos < len(raw) and idx < len(out):
-                val = raw[pos]
-                out[idx] = (val or "").strip() or None if isinstance(val, str) else None
-        return out
-    except Exception:
-        pass
+
+    raw_response: Optional[str] = None
+
+    # Detect provider from model name prefix
+    if effective_model.startswith("claude-"):
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if api_key:
+            try:
+                import anthropic
+                client = anthropic.Anthropic(api_key=api_key)
+                msg = client.messages.create(
+                    model=effective_model,
+                    max_tokens=800,
+                    system=system_prompt,
+                    messages=[{"role": "user", "content": user_prompt}],
+                    temperature=0,
+                )
+                raw_response = msg.content[0].text if msg.content else None
+            except Exception:
+                pass
+    elif effective_model.startswith("gemini-"):
+        api_key = os.environ.get("GOOGLE_AI_API_KEY")
+        if api_key:
+            try:
+                import google.generativeai as genai
+                genai.configure(api_key=api_key)
+                g_model = genai.GenerativeModel(
+                    model_name=effective_model,
+                    system_instruction=system_prompt,
+                    generation_config={"temperature": 0, "max_output_tokens": 800, "response_mime_type": "application/json"},
+                )
+                resp = g_model.generate_content(user_prompt)
+                raw_response = resp.text
+            except Exception:
+                pass
+    else:
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if api_key:
+            try:
+                from openai import OpenAI
+                client = OpenAI(api_key=api_key)
+                resp = client.chat.completions.create(
+                    model=effective_model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    temperature=0,
+                    max_tokens=800,
+                )
+                raw_response = resp.choices[0].message.content or None
+            except Exception:
+                pass
+
+    if raw_response:
+        try:
+            data = json.loads(raw_response.strip())
+            raw = data.get("meanings") or []
+            if isinstance(raw, list):
+                out: List[Optional[str]] = [None] * len(suggested_head)
+                for pos, idx in enumerate(indices):
+                    if pos < len(raw) and idx < len(out):
+                        val = raw[pos]
+                        out[idx] = (val or "").strip() or None if isinstance(val, str) else None
+                return out
+        except Exception:
+            pass
     return [None] * len(suggested_head)

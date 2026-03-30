@@ -30,6 +30,10 @@ class ProductImport(models.Model):
         help_text="Detailed error message explaining why parsing failed or why 0 rows were detected"
     )
     
+    # Category / product type assigned to this import (set during the "Assign Category" step).
+    # Stored directly here so process_import doesn't need to look up CategoryBatch.
+    category = models.CharField(max_length=255, blank=True, default="")
+
     # Import behavior settings
     group_by_product_key = models.BooleanField(
         default=False,
@@ -111,7 +115,9 @@ class CategoryBatch(models.Model):
         return f"Batch {self.id} {self.category} [{self.status}]"
 
 
-class AttributeMapping(models.Model):
+class ImportColumnMapping(models.Model):
+    """Records how each CSV/XLSX column was mapped to a catalog Attribute during import."""
+
     class Strategy(models.TextChoices):
         MATCHED = "matched", "Matched"
         CREATED = "created", "Created"
@@ -145,6 +151,10 @@ class AttributeMapping(models.Model):
 
     def __str__(self) -> str:
         return f"{self.source_attr_name} ({self.strategy})"
+
+
+# Backward-compatibility alias — use ImportColumnMapping in new code.
+AttributeMapping = ImportColumnMapping
 
 
 class ImportColumnRule(models.Model):

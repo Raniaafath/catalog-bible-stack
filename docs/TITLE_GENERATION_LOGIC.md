@@ -84,4 +84,6 @@ So: **template** = which attributes; **locale** = which language; **Translations
 
 ## Strict locale (no fallback)
 
-If `TITLE_STRICT_LOCALE` is `True` (default), the renderer does **not** fall back to another locale (e.g. default/source) when loading `AttributeValueI18n` or `ProductAttributeValueI18n`. Only the requested locale is used. So the “wrong language” is either the requested locale (if you chose the wrong one) or the raw value when no translation exists for that locale.
+`TITLE_STRICT_LOCALE` defaults to `True` (env var; `core/settings.py:L122`). When `True`, the renderer does **not** fall back to another locale (e.g. `DEFAULT_LOCALE_CODE`) when loading `AttributeValueI18n` or `ProductAttributeValueI18n`. Only the requested locale is used — if no translation exists, the raw attribute code/text is used instead.
+
+Set `TITLE_STRICT_LOCALE=false` in `.env` to allow mixed-language fallback (e.g. German head term + French axis values when German translations are missing).

@@ -69,6 +69,5 @@ Search: "col" → Works in any language
 
 ## See Also
 - [Full Research Guide](ATTRIBUTE_RESEARCH_FEATURES.md) - Complete documentation
-- [Before & After](BEFORE_AFTER_RESEARCH.md) - Visual comparison
 - [Quick Reference](QUICK_REFERENCE.md) - Mapping cheat sheet
 

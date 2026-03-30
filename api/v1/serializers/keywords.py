@@ -35,6 +35,7 @@ class MetricSerializer(serializers.ModelSerializer):
 class PlannerRunSerializer(serializers.ModelSerializer):
     source_code = serializers.SlugRelatedField(source="source", slug_field="code", read_only=True)
     locale_code = serializers.SlugRelatedField(source="locale", slug_field="code", read_only=True)
+    product_type_code = serializers.SlugRelatedField(source="product_type", slug_field="code", read_only=True, allow_null=True)
     keyword_count = serializers.IntegerField(read_only=True, required=False)
 
     class Meta:
@@ -45,6 +46,7 @@ class PlannerRunSerializer(serializers.ModelSerializer):
             "locale_code",
             "locale_id",
             "product_type_id",
+            "product_type_code",
             "channel_id",
             "country_code",
             "geo_target",
@@ -159,6 +161,7 @@ class RunAttributeMapSerializer(serializers.ModelSerializer):
             "status",
             "tagged_by",
             "reason_code",
+            "evidence",
             "updated_at",
         ]
 

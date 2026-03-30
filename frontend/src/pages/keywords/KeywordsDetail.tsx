@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Search, Loader2, CheckCircle2, TrendingUp, MapPin } from 'lucide-react';
+import { Search, Loader2, CheckCircle2, TrendingUp, ArrowRight } from 'lucide-react';
 import { PageHeader } from '@/components/PageHeader';
 import { StatusBadge } from '@/components/StatusBadge';
 import { DataTable, Column } from '@/components/DataTable';
@@ -10,7 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Label } from '@/components/ui/label';
-import { getPlannerRun, approvePlannerRun, mapPlannerRunKeywords, PlannerKeyword } from '@/lib/api';
+import { getPlannerRun, approvePlannerRun, PlannerKeyword } from '@/lib/api';
 
 type KeywordSortOrder = 'default' | 'volume_desc' | 'volume_asc';
 
@@ -47,15 +47,6 @@ export default function KeywordsDetail() {
     mutationFn: (ids: number[]) => approvePlannerRun(runId, ids),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['planner-run', runId] });
-    },
-  });
-
-  const mapMutation = useMutation({
-    mutationFn: () => mapPlannerRunKeywords(runId),
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['planner-run', runId] });
-      queryClient.invalidateQueries({ queryKey: ['planner-run-mappings', runId] });
-      if (data.mapped > 0) navigate(`/keywords/${runId}/mappings`);
     },
   });
 
@@ -162,33 +153,20 @@ export default function KeywordsDetail() {
         ]}
         actions={
           <div className="flex items-center gap-2">
-            {keywordsList.length > 0 && (
-              <Button
-                variant="outline"
-                onClick={() => mapMutation.mutate()}
-                disabled={mapMutation.isPending}
-              >
-                {mapMutation.isPending && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-                <MapPin className="w-4 h-4 mr-2" />
-                Map keywords
-              </Button>
-            )}
-            <Button
-              variant="outline"
-              onClick={() => navigate(`/keywords/${runId}/mappings`)}
-            >
-              View mappings
-            </Button>
             {(run?.status === 'success' || run?.status === 'completed') && selectedKeywords.size > 0 && (
-              <Button onClick={handleApprove} disabled={approveMutation.isPending}>
+              <Button variant="outline" onClick={handleApprove} disabled={approveMutation.isPending}>
                 {approveMutation.isPending ? (
                   <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                 ) : (
                   <CheckCircle2 className="w-4 h-4 mr-2" />
                 )}
-                Approve {selectedKeywords.size} Keywords
+                Approve {selectedKeywords.size}
               </Button>
             )}
+            <Button onClick={() => navigate(`/keywords/${runId}/mappings`)}>
+              <ArrowRight className="w-4 h-4 mr-2" />
+              Map &amp; extract terms
+            </Button>
           </div>
         }
       />
@@ -222,6 +200,32 @@ export default function KeywordsDetail() {
             </p>
           </CardContent>
         </Card>
+      </div>
+
+      {/* Workflow guide */}
+      <div className="mb-6 rounded-lg border bg-muted/30 px-5 py-4">
+        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Keyword workflow</p>
+        <div className="flex flex-wrap gap-0">
+          {[
+            { step: 1, label: 'Review & approve keywords', done: true, active: true },
+            { step: 2, label: 'Run AI mapping', done: false, active: false },
+            { step: 3, label: 'Extract head & hook terms', done: false, active: false },
+            { step: 4, label: 'Save terms for titles', done: false, active: false },
+          ].map((s, i, arr) => (
+            <div key={s.step} className="flex items-center">
+              <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium ${s.active ? 'bg-primary text-primary-foreground' : s.done ? 'bg-green-100 text-green-700' : 'text-muted-foreground'}`}>
+                <span className={`w-5 h-5 rounded-full flex items-center justify-center text-xs font-bold shrink-0 ${s.active ? 'bg-primary-foreground/20' : s.done ? 'bg-green-200' : 'bg-muted'}`}>
+                  {s.step}
+                </span>
+                {s.label}
+              </div>
+              {i < arr.length - 1 && <ArrowRight className="w-4 h-4 mx-1 text-muted-foreground/40 shrink-0" />}
+            </div>
+          ))}
+        </div>
+        <p className="text-xs text-muted-foreground mt-3">
+          Review the keywords below, optionally approve the ones you want to keep, then click <strong>Map &amp; extract terms →</strong> to run AI mapping and extract head/hook terms.
+        </p>
       </div>
 
       {run?.status === 'running' && (

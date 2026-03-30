@@ -10,7 +10,7 @@ A complete AI-powered product catalog management system that handles:
 
 ---
 
-## Current Status (January 2026)
+## Current Status (March 2026)
 
 ### ✅ Phase 1: Product Management (DONE)
 - [x] Manual product creation with attributes
@@ -19,194 +19,70 @@ A complete AI-powered product catalog management system that handles:
 - [x] Variant creation
 - [x] Parent/variant relationships
 - [x] Product list view
-- [x] Batch CSV/Excel import (backend)
-- [x] Import preview and mapping UI
+- [x] Batch CSV/Excel import (backend + UI)
+- [x] Import preview and column mapping UI
+- [x] Category assignment in import flow
 
-### 🔨 Phase 2: Translation Workflow (IN PROGRESS)
-
-#### Backend (Existing)
-- [x] TranslationTask model
-- [x] TranslationItem model
-- [x] AI translation service
+### ✅ Phase 2: Translation Workflow (DONE)
+- [x] TranslationTask model with progress tracking
+- [x] AI translation service (OpenAI, selectable model)
 - [x] API endpoints
+- [x] Translation task creation page (select scope, attributes, language, AI model)
+- [x] Translation task list with status and model column
+- [x] Inline editing of translations
+- [x] `run_translation_tasks` management command
 
-#### Frontend (To Build)
-- [ ] Translation task creation page
-  - [ ] Select products to translate
-  - [ ] Choose target language
-  - [ ] Choose channel (Amazon, eBay, etc.)
-  - [ ] Submit translation job
-- [ ] Translation results page
-  - [ ] Display translated content
-  - [ ] Inline editing capability
-  - [ ] Approve/reject translations
-  - [ ] Save edited translations
-- [ ] Translation task list
-  - [ ] View all translation jobs
-  - [ ] Status tracking
-  - [ ] Progress indicators
-
-### 🔨 Phase 3: Keyword Research (PARTIALLY DONE)
-
-#### Backend (Existing)
-- [x] KeywordSeed model
-- [x] KeywordIdea model
-- [x] Google Ads API integration
+### ✅ Phase 3: Keyword Research (DONE)
+- [x] PlannerSeed, PlannerRun, PlannerRunKeyword models
+- [x] Google Ads API integration (`fetch_keyword_ideas`)
 - [x] Keyword metrics storage
+- [x] Keyword import via CSV
+- [x] Keyword list / planner run UI
+- [x] Keyword-to-product mapping (AttributeMap, `map_keywords`)
+- [x] Saved terms / approved terms UI
+- [x] Keyword mapping review UI
 
-#### Frontend (To Build)
-- [ ] Keyword import page
-  - [ ] Upload keyword CSV
-  - [ ] Google Ads API connector
-  - [ ] Seed keyword input
-  - [ ] Run keyword research
-- [ ] Keyword list view
-  - [ ] Display keywords with metrics
-  - [ ] Filter and sort
-  - [ ] Search volume display
-  - [ ] Competition indicators
+### ✅ Phase 4: AI Keyword-to-Product Mapping (DONE)
+- [x] AttributeMap model (keyword → attribute/value)
+- [x] ProductKeywordMap (product → keyword with confidence)
+- [x] AI mapping service (`product_keyword_mapper`)
+- [x] `persist-mappings` API endpoint
+- [x] Mapping results view in UI
+- [x] AI mapping overwrites rules-based (ENUM) rows for the same keywords (AI wins)
+- [x] Language-agnostic size/marketplace attribute filtering (prefix/suffix patterns, not hardcoded codes)
+- [x] Smart numeric matching: bare numbers only matched when attribute has no unit (avoids `"30"` → `profondeur=30cm`)
+- [x] Head/hook term AI reasons (`use_ai_reason` param on `suggested-terms` endpoint)
+- [x] AI meaning generation for keywords (`use_ai_meaning` param on `suggested-terms` endpoint)
 
-### ⚠️ Phase 4: AI Keyword-to-Product Mapping (NEW)
+### ✅ Phase 5: Title Template System (DONE)
+- [x] Template / TemplatePart models (head/hook/literal/axis/attribute parts)
+- [x] Template rendering engine (`title_renderer.py`)
+- [x] Template CRUD API endpoints
+- [x] Template management UI
+- [x] `create-default-template` endpoint for listings
 
-#### Backend (To Build)
-- [ ] ProductKeywordMapping model
-  - [ ] product_id
-  - [ ] keyword_id
-  - [ ] confidence_score
-  - [ ] ai_reasoning (JSON)
-  - [ ] status (pending/approved/rejected)
-  - [ ] mapped_at
-- [ ] AI mapping service
-  - [ ] Analyze product attributes
-  - [ ] Match with keyword intent
-  - [ ] Generate reasoning
-  - [ ] Return confidence scores
-- [ ] Mapping API endpoints
-  - [ ] POST /api/v1/keyword-mapping/run/
-  - [ ] GET /api/v1/keyword-mapping/{id}/
-  - [ ] PATCH /api/v1/keyword-mapping/{id}/approve/
-  - [ ] PATCH /api/v1/keyword-mapping/{id}/reject/
+### ✅ Phase 6: Title Generation (DONE)
+- [x] TitleRenderer service (keyword insertion, axis handling, policy enforcement, uniqueness)
+- [x] Per-listing title generation (`generate-titles` endpoint)
+- [x] Generated titles review UI in listing group detail
+- [x] TitleSelection / approval workflow
+- [x] Axis resolution priority (listing → channel → product)
 
-#### Frontend (To Build)
-- [ ] Keyword mapping runner page
-  - [ ] Select products
-  - [ ] Select keyword set
-  - [ ] One-time AI prompt input (optional)
-  - [ ] Run mapping button
-  - [ ] Progress indicator
-- [ ] Mapping results view
-  - [ ] Product-keyword pairs
-  - [ ] AI reasoning display
-  - [ ] Confidence scores
-  - [ ] Approve/reject buttons
-  - [ ] Bulk approval
-  - [ ] Filter by confidence
+### 🔨 Phase 7: Description Generation (IN PROGRESS)
+- [x] ContentSelection model (description_text, bullets_json, description_ai_enabled)
+- [x] `content/preview/` API endpoint (returns features + description per variant)
+- [x] `content/generate/` API endpoint
+- [x] `content/save-selection/` API endpoint
+- [x] DD description structure spec (`docs/DD_DESCRIPTION_STRUCTURE.md`)
+- [ ] Full description generation UI
+- [ ] Description editor with bullet point management
+- [ ] Per-channel description output configuration
 
-### 🔨 Phase 5: Title Template System (PARTIALLY DONE)
-
-#### Backend (Existing)
-- [x] TitleTemplate model
-- [x] Template rendering logic
-- [x] Variable substitution
-
-#### Frontend (To Build)
-- [ ] Template editor page
-  - [ ] Template name input
-  - [ ] Template text editor
-  - [ ] Variable picker ({{brand}}, {{model}}, etc.)
-  - [ ] Keyword slot markers
-  - [ ] Preview with sample product
-  - [ ] Save template
-- [ ] AI template generator
-  - [ ] Analyze product category
-  - [ ] Generate template suggestions
-  - [ ] User prompt input (one-time)
-  - [ ] Display generated templates
-  - [ ] Edit and save
-- [ ] Template selector
-  - [ ] List saved templates
-  - [ ] Preview templates
-  - [ ] Select for title generation
-
-### 🔨 Phase 6: Title Generation (BACKEND DONE)
-
-#### Backend (Existing)
-- [x] TitleRenderer service
-- [x] Keyword insertion
-- [x] Variant axis handling
-- [x] Template variable substitution
-
-#### Frontend (To Build)
-- [ ] Title generation page
-  - [ ] Select products
-  - [ ] Select template
-  - [ ] Select mapped keywords
-  - [ ] Generate titles button
-  - [ ] Preview generated titles
-  - [ ] AI refinement option
-    - [ ] One-time prompt input
-    - [ ] Refine for clarity
-    - [ ] Compare before/after
-  - [ ] Approve titles
-- [ ] Variant title handling
-  - [ ] Show all variants
-  - [ ] Display variation axes
-  - [ ] Consistent keyword usage
-  - [ ] Variation-specific text
-
-### ⚠️ Phase 7: Description Generation (NEW)
-
-#### Backend (To Build)
-- [ ] ProductDescription model
-  - [ ] product_id
-  - [ ] locale
-  - [ ] description_text
-  - [ ] bullet_points (JSON)
-  - [ ] generated_by (ai/manual)
-  - [ ] approved_at
-- [ ] AI description service
-  - [ ] Analyze product attributes
-  - [ ] Use approved keywords
-  - [ ] Generate structured content
-  - [ ] Create bullet points
-- [ ] Description API endpoints
-  - [ ] POST /api/v1/descriptions/generate/
-  - [ ] GET /api/v1/descriptions/{id}/
-  - [ ] PATCH /api/v1/descriptions/{id}/
-
-#### Frontend (To Build)
-- [ ] Description generator page
-  - [ ] Select products
-  - [ ] Choose description style
-  - [ ] One-time AI prompt (optional)
-  - [ ] Generate descriptions
-  - [ ] Display results
-- [ ] Description editor
-  - [ ] Rich text editor
-  - [ ] Bullet point editor
-  - [ ] Keyword highlighting
-  - [ ] Character count
-  - [ ] Save and approve
-
-### ✅ Phase 8: Export System (BACKEND DONE)
-
-#### Backend (Existing)
-- [x] ExportJob model
-- [x] CSV/Excel export
-- [x] Channel-specific formatting
-
-#### Frontend (To Build)
-- [ ] Export page
-  - [ ] Select products
-  - [ ] Choose format (CSV/Excel)
-  - [ ] Select channel (Amazon, eBay, etc.)
-  - [ ] Select language
-  - [ ] Include/exclude fields
-  - [ ] Export button
-- [ ] Download page
-  - [ ] Export job status
-  - [ ] Download link
-  - [ ] Preview export data
+### ✅ Phase 8: Export System (DONE)
+- [x] ExportProfile / ExportJob models
+- [x] CSV/Excel export with channel-specific formatting
+- [x] Export job create API + UI
+- [x] Export job list / download UI
 
 ---
 
@@ -234,32 +110,27 @@ A complete AI-powered product catalog management system that handles:
 
 ## Implementation Priority
 
-### 🔥 Immediate (Next 2-3 days)
-1. Translation UI (Phase 2)
-2. Keyword import UI (Phase 3)
-3. Template editor (Phase 5)
+### 🔥 Active
+1. Description generation UI (Phase 7)
+2. Advanced per-channel description formatting
+3. Bulk operations improvements
 
-### 📅 Short-term (Next week)
-4. AI keyword mapping (Phase 4)
-5. Title generation UI (Phase 6)
-6. Export UI (Phase 8)
-
-### 📆 Medium-term (Next 2 weeks)
-7. Description generation (Phase 7)
-8. AI refinement features
-9. Bulk operations
-10. Advanced filtering
+### 📅 Short-term
+4. AI refinement features for titles/descriptions
+5. Advanced filtering on product/variant lists
+6. Scheduled/automated export
 
 ---
 
 ## Technical Notes
 
 ### AI Integration Points
-1. **Translation**: Existing AI service
-2. **Keyword Mapping**: New AI service needed
-3. **Template Generation**: New AI service needed
-4. **Title Refinement**: New AI service needed
-5. **Description Generation**: New AI service needed
+1. **Translation**: `TranslationTask` → OpenAI/Claude/Gemini (selectable model)
+2. **Keyword Mapping**: `product_keyword_mapper` → `pav_text_llm` source, overwrites rules-based ENUM rows
+3. **Term Extraction Reasons**: `generate_term_reasons()` in `kw/services/term_extraction.py` (single call for all terms)
+4. **Keyword Meaning**: `generate_keyword_meanings()` in `kw/services/term_extraction.py`
+5. **Title Rendering**: Template engine (`pub/services/title_renderer.py`) — deterministic, no AI
+6. **Description Generation**: `pub/services/content_generation.py` — in progress (Phase 7)
 
 ### API Design Pattern
 All AI services follow same pattern:
@@ -281,16 +152,6 @@ result = ai_service.run(
 
 ---
 
-## Questions to Answer
-
-1. **AI Model**: Which AI provider? (OpenAI, Anthropic, local model?)
-2. **Keyword Volume**: How many keywords per product?
-3. **Translation Languages**: Which languages to support initially?
-4. **Export Channels**: Which platforms (Amazon, eBay, Shopify, etc.)?
-5. **User Roles**: Single user or multi-user with permissions?
-6. **Batch Size**: Max products per operation?
-
----
 
 ## Success Metrics
 
@@ -302,11 +163,3 @@ result = ai_service.run(
 
 ---
 
-## Next Steps
-
-**Which phase should we start with?**
-1. Complete Translation UI?
-2. Build Keyword Mapping?
-3. Finish Title Generation workflow?
-
-Let me know your priority and I'll start building! 🚀

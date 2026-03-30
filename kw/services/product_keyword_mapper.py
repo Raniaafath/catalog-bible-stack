@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from contextlib import nullcontext
 from typing import Dict, List, Optional
@@ -13,20 +12,25 @@ from catalog.models import AttributeValue, Product, ProductAttributeValue
 from content.models import AttributeValueI18n, Locale, ProductAttributeValueI18n, ProductI18n
 from kw.management.commands.parse_keywords import _normalize_term, _ngram_tokens, _tokenize
 from kw.stopwords import get_match_stopwords
-from django.conf import settings
 from kw.models import AttributeMap, KeywordParse, PlannerRun, PlannerRunKeyword, ProductKeywordMap, Keyword, Metric
+from kw.services.mapping_service import run_rules_mapping
+from pub.services.ai_constants import DEFAULT_MAPPING_AI_MODEL, MAPPING_AI_MODELS
 
 _SPACE_RE = re.compile(r"\s+")
 
 # Do not create a match when the matched phrase is shorter than this (avoids "r", "1", etc.).
 _MIN_MATCH_PHRASE_LEN = 2
 
-# Attribute codes treated as "size" when ignore_size_and_marketplace is True (no mappings created for these).
+# Attribute codes treated as "size" when ignore_size_and_marketplace is True.
+# Exact-match fallbacks for bare dimension codes with no unit suffix.
 _SIZE_ATTRIBUTE_CODES: frozenset[str] = frozenset({
-    "longueur_cm", "largeur_cm", "hauteur_cm", "profondeur_cm",
     "size", "taille", "dimension", "dimensions",
-    "width", "height", "length", "depth", "length_cm", "width_cm", "height_cm",
+    "width", "height", "length", "depth",
 })
+
+# Unit suffixes that identify a physical dimension attribute, regardless of language.
+# e.g. "longueur_cm", "breite_mm", "height_inch", "profondeur_m" all end with one of these.
+_SIZE_SUFFIXES = ("_cm", "_mm", "_m", "_inch", "_in", "_px")
 
 
 def _is_size_attribute(attribute_code: Optional[str]) -> bool:
@@ -35,7 +39,8 @@ def _is_size_attribute(attribute_code: Optional[str]) -> bool:
     code = (attribute_code or "").strip().lower()
     if code in _SIZE_ATTRIBUTE_CODES:
         return True
-    if code.endswith("_cm") and any(code.startswith(p) for p in ("longueur", "largeur", "hauteur", "profondeur", "length", "width", "height", "depth")):
+    # Any attribute whose code ends with a unit suffix is a dimension — language-agnostic.
+    if any(code.endswith(sfx) for sfx in _SIZE_SUFFIXES):
         return True
     return False
 
@@ -56,13 +61,6 @@ def _numeric_substring_false_match(keyword_term: str, value_code: Optional[str])
         if token != val and val in token:
             return True
     return False
-
-
-def _debug_log_path():
-    """Path for debug log (works in Docker when project is mounted at BASE_DIR)."""
-    base = getattr(settings, "BASE_DIR", None)
-    root = str(base) if base is not None else os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    return os.path.join(root, ".cursor", "debug.log")
 
 
 def _json_safe(val: object) -> object:
@@ -181,6 +179,85 @@ def _build_llm_instructions(
     return base
 
 
+def _detect_mapping_provider(model: str) -> str:
+    """Return 'anthropic', 'google', or 'openai' based on model name prefix."""
+    if model.startswith("claude-"):
+        return "anthropic"
+    if model.startswith("gemini-"):
+        return "google"
+    return "openai"
+
+
+def _call_mapping_llm(
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+) -> Optional[str]:
+    """
+    Call the appropriate LLM provider for mapping and return the raw JSON string.
+    Returns None if the provider is unavailable or an error occurs.
+    """
+    import os
+
+    provider = _detect_mapping_provider(model)
+
+    if provider == "anthropic":
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            return None
+        try:
+            import anthropic
+            client = anthropic.Anthropic(api_key=api_key)
+            msg = client.messages.create(
+                model=model,
+                max_tokens=400,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}],
+                temperature=0,
+            )
+            return (msg.content[0].text if msg.content else None)
+        except Exception:
+            return None
+
+    if provider == "google":
+        api_key = os.getenv("GOOGLE_AI_API_KEY")
+        if not api_key:
+            return None
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=api_key)
+            g_model = genai.GenerativeModel(
+                model_name=model,
+                system_instruction=system_prompt,
+                generation_config={"temperature": 0, "max_output_tokens": 400, "response_mime_type": "application/json"},
+            )
+            resp = g_model.generate_content(user_prompt)
+            return resp.text
+        except Exception:
+            return None
+
+    # OpenAI (default)
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return None
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0,
+            max_tokens=400,
+            response_format={"type": "json_object"},
+        )
+        return resp.choices[0].message.content or "{}"
+    except Exception:
+        return None
+
+
 def product_keywords_for_run(
     *,
     product_id: int,
@@ -222,6 +299,7 @@ def product_keyword_matches_for_run(
     max_description_chars: Optional[int] = None,
     locale: Optional[Locale] = None,
     use_llm: bool = False,
+    llm_model: str = DEFAULT_MAPPING_AI_MODEL,
     llm_max_keywords: int = 80,
     max_text_matches: Optional[int] = None,
     prk_list: Optional[List[PlannerRunKeyword]] = None,
@@ -232,41 +310,35 @@ def product_keyword_matches_for_run(
     ignore_size_and_marketplace: bool = False,
     focus_head_terms: bool = False,
     focus_hook_terms: bool = False,
+    skip_enum_maps: bool = False,
 ) -> Dict[str, object]:
     """
     Hybrid per-product mapping:
       - enum_maps: AttributeMap rows whose attribute_value_id exists on the product
       - text_matches: keywords whose phrases overlap product free-text values
+    When skip_enum_maps=True the rules-based enum_maps step is omitted entirely,
+    so only text/LLM matches are returned. Use this for a clean AI-only run.
     """
-    # #region agent log
-    try:
-        _lp = _debug_log_path()
-        os.makedirs(os.path.dirname(_lp), exist_ok=True)
-        with open(_lp, "a") as _f:
-            _f.write(json.dumps({"location": "product_keyword_mapper.py:matches_for_run:entry", "message": "product_keyword_matches_for_run entry", "data": {"product_id": product_id}, "hypothesisId": "H4", "timestamp": __import__("time").time() * 1000}) + "\n")
-    except Exception:
-        pass
-    # #endregion
-    enum_maps = product_keywords_for_run(
-        product_id=product_id,
-        run=run,
-        min_confidence=min_confidence,
-    )
-    if ignore_size_and_marketplace:
-        enum_maps = enum_maps.exclude(attribute__code__in=list(_SIZE_ATTRIBUTE_CODES))
+    if skip_enum_maps:
+        enum_maps = []
+    else:
+        enum_maps = product_keywords_for_run(
+            product_id=product_id,
+            run=run,
+            min_confidence=min_confidence,
+        )
+        if ignore_size_and_marketplace:
+            # Mirror _is_size_attribute: exact codes + unit suffix patterns (language-agnostic).
+            _size_q = Q(attribute__code__in=list(_SIZE_ATTRIBUTE_CODES))
+            for _sfx in _SIZE_SUFFIXES:
+                _size_q |= Q(attribute__code__endswith=_sfx)
+            enum_maps = enum_maps.exclude(_size_q)
     if not include_text_values:
         return {"enum_maps": enum_maps, "text_matches": []}
     if include_i18n and locale is None:
         locale = run.locale
 
     product = Product.objects.filter(id=product_id).first()
-    # #region agent log
-    try:
-        with open(_debug_log_path(), "a") as _f:
-            _f.write(json.dumps({"location": "product_keyword_mapper.py:matches_for_run:after_product", "message": "product fetched", "data": {"product_id": product_id, "has_product": product is not None}, "hypothesisId": "H4", "timestamp": __import__("time").time() * 1000}) + "\n")
-    except Exception:
-        pass
-    # #endregion
     pav_qs = ProductAttributeValue.objects.filter(
         Q(product_id=product_id) | Q(variant__product_id=product_id)
     ).select_related("attribute", "attribute_value")
@@ -287,18 +359,22 @@ def product_keyword_matches_for_run(
                 }
             )
         if pav.value_number is not None:
-            text_values.append(str(pav.value_number))
-            text_items.append(
-                {
-                    "text": str(pav.value_number),
-                    "match_kind": "pav_numeric",
-                    "attribute_id": pav.attribute_id,
-                    "attribute_value_id": pav.attribute_value_id,
-                    "product_attribute_value_id": pav.id,
-                    "num_value": pav.value_number,
-                    "num_unit": pav.unit,
-                }
-            )
+            # Only index the bare number when there is no unit — if a unit exists,
+            # matching the bare number alone (e.g. "30" → profondeur=30cm) is too
+            # ambiguous.  The with-unit forms ("30 cm", "30cm") are added below.
+            if not pav.unit:
+                text_values.append(str(pav.value_number))
+                text_items.append(
+                    {
+                        "text": str(pav.value_number),
+                        "match_kind": "pav_numeric",
+                        "attribute_id": pav.attribute_id,
+                        "attribute_value_id": pav.attribute_value_id,
+                        "product_attribute_value_id": pav.id,
+                        "num_value": pav.value_number,
+                        "num_unit": None,
+                    }
+                )
             if pav.unit:
                 text_values.append(f"{pav.value_number} {pav.unit}")
                 text_values.append(f"{pav.value_number}{pav.unit}")
@@ -524,20 +600,21 @@ def product_keyword_matches_for_run(
             )
 
     if use_llm:
-        api_key = os.getenv("OPENAI_API_KEY")
-        if api_key:
-            try:
-                from openai import OpenAI
-            except Exception:
-                api_key = None
-        if api_key:
-            client = OpenAI(api_key=api_key)
-            model_name = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-            remaining = [prk for prk in prk_list if prk.keyword_id not in matched_keyword_ids]
-            remaining = remaining[: max(llm_max_keywords, 0)]
+        # Validate model — fall back to default if unknown
+        effective_model = llm_model if llm_model in MAPPING_AI_MODELS else DEFAULT_MAPPING_AI_MODEL
+        remaining = [prk for prk in prk_list if prk.keyword_id not in matched_keyword_ids]
+        remaining = remaining[: max(llm_max_keywords, 0)]
+        if remaining:
             keyword_items = [{"id": prk.keyword_id, "term": prk.keyword.term} for prk in remaining]
             text_snippet = " | ".join(text_values)[:2000]
-            prompt = {
+            system_prompt = (
+                "You map search keywords to product attribute values or product text. "
+                "One attribute = one semantic dimension (e.g. material, installation, color, size). "
+                "Link each keyword to at most one attribute that matches its dimension: "
+                "material words (acrylic, steel) → material; installation words (surface-mounted, built-in) → installation; "
+                "do not mix dimensions in one mapping. Return valid JSON only."
+            )
+            user_payload = {
                 "product_text_values": text_snippet,
                 "attributes_on_product": attribute_context,
                 "keywords": keyword_items,
@@ -550,60 +627,46 @@ def product_keyword_matches_for_run(
                     focus_hook_terms=focus_hook_terms,
                 ),
             }
-            try:
-                resp = client.chat.completions.create(
-                    model=model_name,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": (
-                                "You map search keywords to product attribute values or product text. "
-                                "One attribute = one semantic dimension (e.g. material, installation, color, size). "
-                                "Link each keyword to at most one attribute that matches its dimension: "
-                                "material words (acrylic, steel) → material; installation words (surface-mounted, built-in) → installation; "
-                                "do not mix dimensions in one mapping. Return valid JSON only."
-                            ),
-                        },
-                        {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
-                    ],
-                    temperature=0,
-                    max_tokens=400,
-                    response_format={"type": "json_object"},
-                )
-                content = resp.choices[0].message.content or "{}"
-                data = json.loads(content)
-                for item in data.get("matches", []) or []:
-                    kw_id = item.get("keyword_id")
-                    if not kw_id or kw_id in matched_keyword_ids:
-                        continue
-                    kw_term = None
-                    for prk in remaining:
-                        if prk.keyword_id == kw_id:
-                            kw_term = prk.keyword.term
-                            break
-                    if not kw_term:
-                        continue
-                    reason = (item.get("reason") or "").strip()
-                    attr_code = (item.get("attribute_code") or "").strip() or None
-                    if ignore_size_and_marketplace and _is_size_attribute(attr_code):
-                        continue
-                    matched_keyword_ids.add(kw_id)
-                    attr_id = code_to_attr_id.get(attr_code) if attr_code else None
-                    text_matches.append(
-                        {
-                            "keyword_id": kw_id,
-                            "keyword": kw_term,
-                            "matched_phrase": reason,
-                            "source": "pav_text_llm",
-                            "match_kind": "pav_text_llm",
-                            "matched_text": reason,
-                            "model": model_name,
-                            "attribute_id": attr_id,
-                            "attribute_code": attr_code,
-                        }
-                    )
-            except Exception:
-                pass
+            raw = _call_mapping_llm(
+                model=effective_model,
+                system_prompt=system_prompt,
+                user_prompt=json.dumps(user_payload, ensure_ascii=False),
+            )
+            if raw:
+                try:
+                    data = json.loads(raw)
+                    for item in data.get("matches", []) or []:
+                        kw_id = item.get("keyword_id")
+                        if not kw_id or kw_id in matched_keyword_ids:
+                            continue
+                        kw_term = None
+                        for prk in remaining:
+                            if prk.keyword_id == kw_id:
+                                kw_term = prk.keyword.term
+                                break
+                        if not kw_term:
+                            continue
+                        reason = (item.get("reason") or "").strip()
+                        attr_code = (item.get("attribute_code") or "").strip() or None
+                        if ignore_size_and_marketplace and _is_size_attribute(attr_code):
+                            continue
+                        matched_keyword_ids.add(kw_id)
+                        attr_id = code_to_attr_id.get(attr_code) if attr_code else None
+                        text_matches.append(
+                            {
+                                "keyword_id": kw_id,
+                                "keyword": kw_term,
+                                "matched_phrase": reason,
+                                "source": "pav_text_llm",
+                                "match_kind": "pav_text_llm",
+                                "matched_text": reason,
+                                "model": effective_model,
+                                "attribute_id": attr_id,
+                                "attribute_code": attr_code,
+                            }
+                        )
+                except Exception:
+                    pass
 
     def _text_match_sort_key(item: Dict[str, object]) -> tuple:
         priority = _MATCH_KIND_PRIORITY.get(item.get("match_kind") or "", 0)
@@ -642,6 +705,7 @@ def persist_product_keyword_maps(
     max_text_matches: Optional[int] = 60,
     max_enum_maps: Optional[int] = 120,
     use_llm: bool = False,
+    llm_model: str = DEFAULT_MAPPING_AI_MODEL,
     llm_max_keywords: int = 80,
     dry_run: bool = False,
     focus_on: Optional[str] = None,
@@ -649,26 +713,26 @@ def persist_product_keyword_maps(
     ignore_size_and_marketplace: bool = False,
     focus_head_terms: bool = False,
     focus_hook_terms: bool = False,
+    skip_enum_maps: bool = False,
 ) -> Dict[str, int]:
     """
     Persist per-product keyword mappings for a PlannerRun.
-    
+
     Returns: {
         "products_processed": int,
         "maps_created": int,
         "maps_updated": int,
     }
     """
-    # #region agent log
-    try:
-        with open(_debug_log_path(), "a") as _f:
-            _f.write(json.dumps({"location": "product_keyword_mapper.py:persist:entry", "message": "persist_product_keyword_maps entry", "data": {"run_id": run_id, "product_id": product_id, "limit": limit}, "hypothesisId": "H1", "timestamp": __import__("time").time() * 1000}) + "\n")
-    except Exception:
-        pass
-    # #endregion
     run = PlannerRun.objects.select_related("locale", "product_type").filter(id=run_id).first()
     if not run:
         raise ValueError(f"PlannerRun {run_id} not found")
+
+    # Auto-run rules mapping if no AttributeMap rows exist for this run yet,
+    # so AI product mapping works standalone without requiring a prior "Map keywords" step.
+    has_attr_maps = AttributeMap.objects.filter(origin_run_keyword__run=run).exists()
+    if not has_attr_maps:
+        run_rules_mapping(run_id)
 
     products = Product.objects.all()
     if run.product_type:
@@ -678,17 +742,10 @@ def persist_product_keyword_maps(
     if limit:
         products = products[:limit]
     products_list = list(products)
-    # #region agent log
-    try:
-        with open(_debug_log_path(), "a") as _f:
-            _f.write(json.dumps({"location": "product_keyword_mapper.py:persist:products_count", "message": "products to process", "data": {"n": len(products_list)}, "hypothesisId": "H4", "timestamp": __import__("time").time() * 1000}) + "\n")
-    except Exception:
-        pass
-    # #endregion
 
     prk_list = list(PlannerRunKeyword.objects.filter(run=run).select_related("keyword"))
     keyword_ids = [prk.keyword_id for prk in prk_list]
-    
+
     parse_map: Dict[int, list] = {}
     for row in (
         KeywordParse.objects.filter(keyword_id__in=keyword_ids)
@@ -697,7 +754,7 @@ def persist_product_keyword_maps(
     ):
         if row["keyword_id"] not in parse_map:
             parse_map[row["keyword_id"]] = list(row["phrases"] or [])
-    
+
     keyword_vol_map = {
         row["keyword_id"]: row["vol"] or 0
         for row in Metric.objects.filter(keyword_id__in=keyword_ids)
@@ -718,15 +775,7 @@ def persist_product_keyword_maps(
 
     for product in products_list:
         total += 1
-        # #region agent log
-        try:
-            with open(_debug_log_path(), "a") as _f:
-                _f.write(json.dumps({"location": "product_keyword_mapper.py:persist:loop_product", "message": "product iteration", "data": {"product_id": product.id, "total_so_far": total}, "hypothesisId": "H4,H5", "timestamp": __import__("time").time() * 1000}) + "\n")
-        except Exception:
-            pass
-        # #endregion
-        try:
-            res = product_keyword_matches_for_run(
+        res = product_keyword_matches_for_run(
             product_id=product.id,
             run=run,
             min_confidence=min_confidence,
@@ -735,6 +784,7 @@ def persist_product_keyword_maps(
             include_descriptions=include_descriptions,
             max_description_chars=max_description_chars,
             use_llm=use_llm,
+            llm_model=llm_model,
             llm_max_keywords=llm_max_keywords,
             max_text_matches=max_text_matches,
             prk_list=prk_list,
@@ -745,16 +795,8 @@ def persist_product_keyword_maps(
             ignore_size_and_marketplace=ignore_size_and_marketplace,
             focus_head_terms=focus_head_terms,
             focus_hook_terms=focus_hook_terms,
+            skip_enum_maps=skip_enum_maps,
         )
-        except Exception as _e:
-            # #region agent log
-            try:
-                with open(_debug_log_path(), "a") as _f:
-                    _f.write(json.dumps({"location": "product_keyword_mapper.py:persist:matches_raised", "message": "product_keyword_matches_for_run raised", "data": {"product_id": product.id, "exc_type": type(_e).__name__, "exc_msg": str(_e)[:400]}, "hypothesisId": "H4", "timestamp": __import__("time").time() * 1000}) + "\n")
-            except Exception:
-                pass
-            # #endregion
-            raise
         enum_maps_raw = res["enum_maps"]
         if max_enum_maps:
             enum_maps = list(enum_maps_raw)[:max_enum_maps]
@@ -768,86 +810,93 @@ def persist_product_keyword_maps(
         }
 
         ctx = transaction.atomic() if not dry_run else nullcontext()
-        try:
-            with ctx:
-                for amap in enum_maps:
-                    if dry_run:
-                        created += 1
-                        continue
-                    evidence_val = amap.evidence if isinstance(amap.evidence, dict) else {}
-                    obj, is_created = ProductKeywordMap.objects.update_or_create(
+        with ctx:
+            # When AI mapping is active, remove stale rules-based (ENUM) rows so
+            # AI results are the single source of truth for this product/run.
+            if use_llm and not dry_run:
+                llm_keyword_ids = {
+                    item["keyword_id"]
+                    for item in text_matches
+                    if (item.get("match_kind") or item.get("source") or "") == "pav_text_llm"
+                }
+                if llm_keyword_ids:
+                    ProductKeywordMap.objects.filter(
                         product=product,
-                        keyword=amap.keyword,
                         run=run,
                         source=ProductKeywordMap.Source.ENUM,
-                        defaults={
-                            "attribute": amap.attribute,
-                            "attribute_value": amap.attribute_value,
-                            "confidence": amap.confidence,
-                            "match_kind": ProductKeywordMap.Source.ENUM.value,
-                            "evidence": _json_safe({
-                                "attribute_map_id": amap.id,
-                                "reason_code": getattr(amap, "reason_code", "") or "",
-                                "evidence": evidence_val,
-                            }),
-                        },
-                    )
-                    if is_created:
-                        created += 1
-                    else:
-                        updated += 1
+                        keyword_id__in=llm_keyword_ids,
+                    ).delete()
 
-                for item in text_matches:
-                    kw = keyword_map.get(item["keyword_id"])
-                    if not kw:
-                        continue
-                    if dry_run:
-                        created += 1
-                        continue
-                    raw_source = item.get("match_kind") or item.get("source") or ProductKeywordMap.Source.TEXT
-                    valid_sources = {s.value for s in ProductKeywordMap.Source}
-                    source = raw_source if isinstance(raw_source, str) and raw_source in valid_sources else ProductKeywordMap.Source.TEXT
-                    if hasattr(source, "value"):
-                        source = source.value
-                    match_kind_raw = item.get("match_kind") or item.get("source") or ""
-                    match_kind = str(match_kind_raw)[:32] if match_kind_raw else ""
-                    num_val = item.get("num_value")
-                    num_unit_val = item.get("num_unit")
-                    if num_unit_val is not None and not isinstance(num_unit_val, str):
-                        num_unit_val = str(num_unit_val)[:50]
-                    obj, is_created = ProductKeywordMap.objects.update_or_create(
-                        product=product,
-                        keyword=kw,
-                        run=run,
-                        source=source,
-                        defaults={
-                            "confidence": None,
-                            "attribute_id": item.get("attribute_id"),
-                            "attribute_value_id": item.get("attribute_value_id"),
-                            "num_value": num_val,
-                            "num_unit": num_unit_val,
-                            "match_kind": match_kind,
-                            "matched_text": (item.get("matched_text") or "")[:65535],
-                            "evidence": _json_safe({
-                                "matched_phrase": item.get("matched_phrase"),
-                                "model": item.get("model"),
-                                "variant_id": item.get("variant_id"),
-                            }),
-                        },
-                    )
-                    if is_created:
-                        created += 1
-                    else:
-                        updated += 1
-        except Exception as _e:
-            # #region agent log
-            try:
-                with open(_debug_log_path(), "a") as _f:
-                    _f.write(json.dumps({"location": "product_keyword_mapper.py:persist:update_or_create_raised", "message": "update_or_create or atomic block raised", "data": {"product_id": product.id, "exc_type": type(_e).__name__, "exc_msg": str(_e)[:400]}, "hypothesisId": "H5", "timestamp": __import__("time").time() * 1000}) + "\n")
-            except Exception:
-                pass
-            # #endregion
-            raise
+            for amap in enum_maps:
+                if dry_run:
+                    created += 1
+                    continue
+                evidence_val = amap.evidence if isinstance(amap.evidence, dict) else {}
+                obj, is_created = ProductKeywordMap.objects.update_or_create(
+                    product=product,
+                    keyword=amap.keyword,
+                    run=run,
+                    source=ProductKeywordMap.Source.ENUM,
+                    defaults={
+                        "attribute": amap.attribute,
+                        "attribute_value": amap.attribute_value,
+                        "confidence": amap.confidence,
+                        "match_kind": ProductKeywordMap.Source.ENUM.value,
+                        "evidence": _json_safe({
+                            "attribute_map_id": amap.id,
+                            "reason_code": getattr(amap, "reason_code", "") or "",
+                            "evidence": evidence_val,
+                        }),
+                    },
+                )
+                if is_created:
+                    created += 1
+                else:
+                    updated += 1
+
+            for item in text_matches:
+                kw = keyword_map.get(item["keyword_id"])
+                if not kw:
+                    continue
+                if dry_run:
+                    created += 1
+                    continue
+                raw_source = item.get("match_kind") or item.get("source") or ProductKeywordMap.Source.TEXT
+                valid_sources = {s.value for s in ProductKeywordMap.Source}
+                source = raw_source if isinstance(raw_source, str) and raw_source in valid_sources else ProductKeywordMap.Source.TEXT
+                if hasattr(source, "value"):
+                    source = source.value
+                match_kind_raw = item.get("match_kind") or item.get("source") or ""
+                match_kind = str(match_kind_raw)[:32] if match_kind_raw else ""
+                num_val = item.get("num_value")
+                num_unit_val = item.get("num_unit")
+                if num_unit_val is not None and not isinstance(num_unit_val, str):
+                    num_unit_val = str(num_unit_val)[:50]
+                obj, is_created = ProductKeywordMap.objects.update_or_create(
+                    product=product,
+                    keyword=kw,
+                    run=run,
+                    source=source,
+                    defaults={
+                        "confidence": None,
+                        "attribute_id": item.get("attribute_id"),
+                        "attribute_value_id": item.get("attribute_value_id"),
+                        "num_value": num_val,
+                        "num_unit": num_unit_val,
+                        "match_kind": match_kind,
+                        "matched_text": (item.get("matched_text") or "")[:65535],
+                        "evidence": _json_safe({
+                            "matched_phrase": item.get("matched_phrase"),
+                            "model": item.get("model"),
+                            "variant_id": item.get("variant_id"),
+                        }),
+                    },
+                )
+                if is_created:
+                    created += 1
+                else:
+                    updated += 1
+
     return {
         "products_processed": total,
         "maps_created": created,

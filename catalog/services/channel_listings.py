@@ -28,6 +28,7 @@ from pub.models import (
     Channel,
     ChannelListing,
     ChannelListingMap,
+    ContentSelection,
     Template,
     TemplatePart,
     GenerationRun,
@@ -713,14 +714,15 @@ def get_available_templates_for_listing(listing_id: int, locale_code: str) -> Li
     except Locale.DoesNotExist:
         raise ChannelListingError(f"Locale {locale_code} not found")
     
-    # Query active templates matching product type, channel, and locale
+    # Query all non-archived templates matching product type, channel, and locale
     templates = Template.objects.filter(
         product_type=listing.product.product_type,
         channel=listing.channel,
         locale=locale,
-        status=Template.Status.ACTIVE,
         kind=Template.Kind.TITLE,
-    ).select_related('product_type', 'channel', 'locale').order_by('-version', '-id')
+    ).exclude(status=Template.Status.ARCHIVED).select_related(
+        'product_type', 'channel', 'locale'
+    ).order_by('-version', '-id')
     
     return [
         {
@@ -839,6 +841,9 @@ def generate_titles_for_listing(
     locale_code: str,
     template_id: Optional[int] = None,
     planner_run_id: Optional[int] = None,
+    improve_title: bool = False,
+    title_ai_model: str = "",
+    title_ai_instructions: str = "",
 ) -> Dict[str, Any]:
     """
     Generate titles for all variants in a channel listing.
@@ -848,6 +853,9 @@ def generate_titles_for_listing(
         locale_code: The locale code for translations
         template_id: Optional template ID to use (otherwise auto-selected)
         planner_run_id: Optional planner run ID for keyword data
+        improve_title: Whether to run AI polish on generated titles
+        title_ai_model: AI model for title polish
+        title_ai_instructions: Optional AI instructions for title polish
     
     Returns:
         Dictionary with generation results:
@@ -899,27 +907,12 @@ def generate_titles_for_listing(
         context="title",
         listing_id=listing.id,
         template_id=template_id,
+        improve_title=improve_title,
+        title_ai_model=title_ai_model,
+        title_ai_instructions=title_ai_instructions,
     )
-    # #region agent log
-    try:
-        from core.debug_utils import DEBUG_LOG_PATH
-        import json
-        with open(DEBUG_LOG_PATH, "a") as f:
-            f.write(json.dumps({"message": "generate_titles_for_listing before generate_titles", "data": {"listing_id": listing_id, "variant_count": len(variant_ids)}, "hypothesisId": "H4", "location": "channel_listings"}) + "\n")
-    except Exception:
-        pass
-    # #endregion
     # Generate titles
     result = generate_titles(request)
-    # #region agent log
-    try:
-        from core.debug_utils import DEBUG_LOG_PATH
-        import json
-        with open(DEBUG_LOG_PATH, "a") as f:
-            f.write(json.dumps({"message": "generate_titles_for_listing after generate_titles", "data": {"outputs_len": len(result.outputs)}, "hypothesisId": "H4", "location": "channel_listings"}) + "\n")
-    except Exception:
-        pass
-    # #endregion
     # Extract run IDs and build JSON-serializable response (native types only)
     generation_run_ids = [
         int(x) for x in set(
@@ -1044,9 +1037,10 @@ def update_listing_generated_title(
         )
     title_output = run.outputs.filter(field="title").first()
     if not title_output:
-        title_output = run.outputs.first()
-    if not title_output:
-        raise ChannelListingError("No generation output found for this run.")
+        raise ChannelListingError(
+            f"No title output found for variant {variant_id} in listing {listing_id}. "
+            "Re-generate titles and try again."
+        )
     title_output.text = title
     title_output.save(update_fields=["text"])
     return {
@@ -1062,14 +1056,18 @@ def get_all_generated_titles(
     channel_code: Optional[str] = None,
     page: int = 1,
     page_size: int = 100,
+    include_descriptions: bool = False,
 ) -> Dict[str, Any]:
     """
     Return all generated titles in the database, optionally filtered by locale and/or channel.
     Latest title per (variant, channel, locale). Paginated.
 
+    When include_descriptions=True, each result includes "description" from the same
+    generation run, with saved ContentSelection.description_text overriding when present.
+
     Returns:
         { "count": int, "results": [ { "variant_id", "sku", "product_id", "product_code",
-          "channel_code", "locale_code", "title", "generated_at" }, ... ] }
+          "channel_code", "locale_code", "title", "generated_at"[, "description"] }, ... ] }
     """
     qs = (
         GenerationRun.objects.filter(variant_id__isnull=False)
@@ -1092,14 +1090,17 @@ def get_all_generated_titles(
             continue
         seen.add(key)
         title_text = None
+        description_text = None
         for output in run.outputs.all():
             if output.field == "title":
                 title_text = output.text
-                break
+            elif output.field == "description":
+                description_text = output.text
         if title_text is None and run.outputs.exists():
             title_text = run.outputs.first().text
         product = run.variant.product if run.variant else None
-        results.append({
+        row = {
+            "run_id": run.id,
             "variant_id": run.variant_id,
             "sku": (run.variant.sku or run.variant.internal_sku or str(run.variant_id)) if run.variant else str(run.variant_id),
             "product_id": run.product_id or (product.id if product else None),
@@ -1108,9 +1109,35 @@ def get_all_generated_titles(
             "locale_code": run.locale.code if run.locale else None,
             "title": title_text or "",
             "generated_at": run.created_at.isoformat() if run.created_at else None,
-        })
+        }
+        if include_descriptions:
+            row["description"] = (description_text or "").strip()
+            row["_locale_id"] = run.locale_id
+            row["_channel_id"] = run.channel_id
+        results.append(row)
+
+    if include_descriptions and results:
+        keys = [(r["variant_id"], r["_locale_id"], r["_channel_id"]) for r in results]
+        variant_ids = {k[0] for k in keys}
+        locale_ids = {k[1] for k in keys}
+        channel_ids = {k[2] for k in keys}
+        cs_qs = ContentSelection.objects.filter(
+            variant_id__in=variant_ids,
+            locale_id__in=locale_ids,
+            channel_id__in=channel_ids,
+        ).values("variant_id", "locale_id", "channel_id", "description_text")
+        cs_map = {}
+        for cs in cs_qs:
+            cs_map[(cs["variant_id"], cs["locale_id"], cs["channel_id"])] = (cs["description_text"] or "").strip()
+        for r in results:
+            key = (r["variant_id"], r["_locale_id"], r["_channel_id"])
+            if key in cs_map and cs_map[key]:
+                r["description"] = cs_map[key]
+            del r["_locale_id"]
+            del r["_channel_id"]
 
     count = len(results)
+    page = max(1, page)
     start = (page - 1) * page_size
     end = start + page_size
     page_results = results[start:end]

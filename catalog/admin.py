@@ -69,9 +69,10 @@ class VariantAdmin(admin.ModelAdmin):
 
 @admin.register(Attribute)
 class AttributeAdmin(admin.ModelAdmin):
-    list_display = ("code", "data_type", "is_multi", "created_at")
+    list_display = ("code", "data_type", "is_multi", "use_in_title", "created_at")
     search_fields = ("code",)
-    list_filter = ("data_type", "is_multi")
+    list_filter = ("data_type", "is_multi", "use_in_title")
+    list_editable = ("use_in_title",)
 
 
 @admin.register(AttributeValue)

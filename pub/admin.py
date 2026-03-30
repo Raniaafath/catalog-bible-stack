@@ -8,6 +8,7 @@ from .models import (
     ChannelListing,
     ChannelListingMap,
     ChannelLocalePolicy,
+    ContentSelection,
     ChannelPolicySet,
     ChannelProductOption,
     ChannelProductOptionAttribute,
@@ -128,6 +129,16 @@ class ApprovalAdmin(admin.ModelAdmin):
     list_display = ("entity_type", "entity_id", "status", "approved_by", "approved_at", "created_at")
     list_filter = ("status",)
     search_fields = ("entity_type", "entity_id")
+
+
+@admin.register(ContentSelection)
+class ContentSelectionAdmin(admin.ModelAdmin):
+    list_display = ("id", "product", "variant", "locale", "channel", "context", "status", "created_by_type", "updated_at")
+    list_filter = ("status", "locale", "channel", "created_by_type")
+    search_fields = ("product__code", "variant__sku", "locale__code", "channel__code", "description_text")
+    raw_id_fields = ("product", "variant", "locale", "channel", "planner_run")
+    readonly_fields = ("created_at", "updated_at")
+    list_per_page = 50
 
 
 @admin.register(ChannelListing)

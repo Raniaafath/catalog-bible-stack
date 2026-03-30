@@ -37,6 +37,7 @@ const GenerateTitles = lazy(() => import("./pages/content/GenerateTitles"));
 const GeneratedTitlesList = lazy(() => import("./pages/content/GeneratedTitlesList"));
 const ExportsList = lazy(() => import("./pages/exports/ExportsList"));
 const ExportsNew = lazy(() => import("./pages/exports/ExportsNew"));
+const ExportCsvPage = lazy(() => import("./pages/exports/ExportCsvPage"));
 const AttributesList = lazy(() => import("./pages/attributes/AttributesList"));
 const AttributeEdit = lazy(() => import("./pages/attributes/AttributeEdit"));
 const TemplatesList = lazy(() => import("./pages/templates/TemplatesList"));
@@ -121,6 +122,16 @@ const App = () => (
                 <ProtectedRoute>
                   <AppLayout>
                     <ExportsNew />
+                  </AppLayout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/exports/csv"
+              element={
+                <ProtectedRoute>
+                  <AppLayout>
+                    <ExportCsvPage />
                   </AppLayout>
                 </ProtectedRoute>
               }

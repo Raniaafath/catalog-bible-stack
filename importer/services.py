@@ -55,36 +55,49 @@ def _norm_col(value: str) -> str:
     return normalized.strip("_")
 
 
-_ROLE_ALIASES = {
-    ImportColumnRule.Role.VARIANT_KEY: {
-        "sku",
-        "variant_sku",
-        "ean",
-        "barcode",
-        "gtin",
-        "id_variant",
-        "variant_id",
-    },
-    ImportColumnRule.Role.PRODUCT_KEY: {
-        "parent_id",
-        "product_id",
-        "group_id",
-        "handle",
-        "parent_sku",
-        "model_id",
-        "model",
-    },
-    ImportColumnRule.Role.CATEGORY: {"category", "product_type", "type", "taxonomy", "categorie", "cat"},
-    ImportColumnRule.Role.BRAND: {"brand", "manufacturer", "marque", "vendor"},
-    ImportColumnRule.Role.TITLE: {"title", "name", "product_name", "nom", "designation"},
-    ImportColumnRule.Role.DESCRIPTION: {"description", "desc", "body_html", "details"},
+# Token keywords for auto-detecting column roles.
+# Each entry is a set of normalized single tokens (underscores removed by _norm_col).
+# A column matches if the normalized column name contains all tokens in any keyword entry.
+# Language-specific terms should NOT be added here — use the column mapping UI for those.
+_ROLE_KEYWORDS: dict[str, set[str]] = {
+    ImportColumnRule.Role.VARIANT_KEY: {"sku", "ean", "barcode", "gtin"},
+    ImportColumnRule.Role.PRODUCT_KEY: {"parent", "group"},
+    ImportColumnRule.Role.CATEGORY: {"category", "taxonomy"},
+    ImportColumnRule.Role.BRAND: {"brand", "manufacturer", "vendor"},
+    ImportColumnRule.Role.TITLE: {"title"},
+    ImportColumnRule.Role.DESCRIPTION: {"description"},
+    ImportColumnRule.Role.BARCODE: {"barcode", "ean", "gtin"},
+    ImportColumnRule.Role.MPN: {"mpn"},
+}
+
+# Exact normalized column name matches take highest priority over token matching.
+_ROLE_EXACT: dict[str, str] = {
+    "sku": ImportColumnRule.Role.VARIANT_KEY,
+    "variant_sku": ImportColumnRule.Role.VARIANT_KEY,
+    "id_variant": ImportColumnRule.Role.VARIANT_KEY,
+    "variant_id": ImportColumnRule.Role.VARIANT_KEY,
+    "parent_id": ImportColumnRule.Role.PRODUCT_KEY,
+    "product_id": ImportColumnRule.Role.PRODUCT_KEY,
+    "group_id": ImportColumnRule.Role.PRODUCT_KEY,
+    "handle": ImportColumnRule.Role.PRODUCT_KEY,
+    "parent_sku": ImportColumnRule.Role.PRODUCT_KEY,
+    "model_id": ImportColumnRule.Role.PRODUCT_KEY,
+    "product_type": ImportColumnRule.Role.CATEGORY,
+    "product_name": ImportColumnRule.Role.TITLE,
+    "name": ImportColumnRule.Role.TITLE,
+    "body_html": ImportColumnRule.Role.DESCRIPTION,
 }
 
 
 def _guess_role(column_name: str) -> str:
     normalized = _norm_col(column_name)
-    for role, aliases in _ROLE_ALIASES.items():
-        if normalized in aliases:
+    # 1. Exact match wins
+    if normalized in _ROLE_EXACT:
+        return _ROLE_EXACT[normalized]
+    # 2. Token-subset match: column contains all tokens of a keyword entry
+    col_tokens = set(normalized.split("_"))
+    for role, keywords in _ROLE_KEYWORDS.items():
+        if keywords & col_tokens:  # any keyword token present in column tokens
             return role
     return ImportColumnRule.Role.ATTRIBUTE
 
@@ -548,17 +561,18 @@ def process_import(import_id: int) -> dict:
         elif rule.role == ImportColumnRule.Role.VARIANT_KEY:
             variant_key_col = col_name
     
-    # Get ProductType from CategoryBatch (assigned in step 2)
-    # If no CategoryBatch, use 'default'
-    category_batch = CategoryBatch.objects.filter(
-        product_import=product_import
-    ).first()
-    
-    if category_batch and category_batch.category:
-        category_code = slugify(category_batch.category)
+    # Resolve ProductType from the category field on the import.
+    # Falls back to CategoryBatch (legacy path) then 'default'.
+    category_name = product_import.category or ""
+    if not category_name:
+        legacy_batch = CategoryBatch.objects.filter(product_import=product_import).first()
+        category_name = (legacy_batch.category if legacy_batch else "") or ""
+
+    if category_name:
+        category_code = slugify(category_name)
         product_type, _ = ProductType.objects.get_or_create(
             code=category_code,
-            defaults={'default_label': category_batch.category}
+            defaults={'default_label': category_name}
         )
     else:
         product_type, _ = ProductType.objects.get_or_create(

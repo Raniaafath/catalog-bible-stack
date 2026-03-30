@@ -64,9 +64,9 @@ export default function ContentList() {
               <FileText className="w-4 h-4 mr-2" />
               All generated titles
             </Button>
-            <Button variant="outline" onClick={() => navigate('/content/generate-titles')}>
+            <Button variant="outline" onClick={() => navigate('/groups')}>
               <FileText className="w-4 h-4 mr-2" />
-              Generate titles
+              Generate in listings
             </Button>
             <Button onClick={() => navigate('/content/new')}>
               <Plus className="w-4 h-4 mr-2" />

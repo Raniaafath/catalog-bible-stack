@@ -1,144 +1,53 @@
 # Documentation Index
 
-## ⭐ Simple Grouping Workflow (Recommended)
+## Architecture
+- **[GROUPING_AND_MARKETPLACE_AXES.md](GROUPING_AND_MARKETPLACE_AXES.md)** — Two-level grouping (catalog vs marketplace) and how variation axes are resolved. **Start here for architecture questions.**
+- **[CATALOG_ARCHITECTURE.md](CATALOG_ARCHITECTURE.md)** — Canonical catalog + publishing layer pattern; axis resolution priority; when to use ChannelVariantAxis vs ChannelListingAxis.
+- **[ARCHITECTURE_DIAGRAM.md](ARCHITECTURE_DIAGRAM.md)** — Import data-flow diagram, ERD, processing flow, axis scoring.
 
-**Simple, user-controlled product grouping:**
+## Title Generation
+- **[TITLE_GENERATION_SCRIPT.md](TITLE_GENERATION_SCRIPT.md)** — How head/hook/axis parts are assembled; why "LATE"/"OOTH" suffixes appear; checklist for clean titles.
+- **[TITLE_GENERATION_LOGIC.md](TITLE_GENERATION_LOGIC.md)** — End-to-end flow from API to stored title; translation lookup priority; TITLE_STRICT_LOCALE.
 
-1. **[SIMPLE_GROUPING_WORKFLOW.md](SIMPLE_GROUPING_WORKFLOW.md)** - Complete guide (START HERE!)
-2. **[examples/manual_grouping_example.py](examples/manual_grouping_example.py)** - Runnable example
+## Description Generation
+- **[DD_DESCRIPTION_STRUCTURE.md](DD_DESCRIPTION_STRUCTURE.md)** — Recommended structure for per-variant descriptions (parent block, variant delta, user instructions, channel output).
 
-**How it works:**
-- Choose category → Import CSV → Create variants (standalone)
-- User selects variants → Choose marketplace → System shows differences
-- User picks variation axes → Create product group
+## Import System
+- **[TESTING_PRODUCTS.md](TESTING_PRODUCTS.md)** — How to add test products via CSV import; column name auto-detection; grouping behaviour.
+- **[START_HERE.md](START_HERE.md)** — Overview of the import workflow with quick links.
+- **[QUICK_START.md](QUICK_START.md)** — Step-by-step import tutorial; CSV structure options.
+- **[QUICK_REFERENCE.md](QUICK_REFERENCE.md)** — Cheat sheet for import column mapping.
+- **[CSV_STRUCTURE_EXAMPLES.md](CSV_STRUCTURE_EXAMPLES.md)** — All CSV format options.
+- **[VISUAL_IMPORT_FLOW.md](VISUAL_IMPORT_FLOW.md)** — Step-by-step import diagrams.
+- **[WHAT_IMPORT_DOES.md](WHAT_IMPORT_DOES.md)** — Technical details of what the import creates.
+- **[FRONTEND_MAPPING_GUIDE.md](FRONTEND_MAPPING_GUIDE.md)** — How to use the attribute mapping UI.
+- **[IMPORT_LOGIC_ANALYSIS.md](IMPORT_LOGIC_ANALYSIS.md)** — Import logic internals.
 
----
+## Keyword Research & Mapping
+- **[KEYWORD_MAPPING_GUIDE.md](KEYWORD_MAPPING_GUIDE.md)** — Full pipeline: rules-based vs AI mapping, how they interact, numeric matching rules, size/language filtering, head/hook term extraction with AI reasons.
+- **[RESEARCH_QUICK_START.md](RESEARCH_QUICK_START.md)** — Keyword research quick start.
+- **[EXTRACTION_FRAMEWORK.md](EXTRACTION_FRAMEWORK.md)** — Keyword extraction framework internals.
 
-## 🚀 Quick Start Guides (Original Auto-Grouping)
+## Listing Groups
+- **[LISTING_GROUPS_EXPLAINED.md](LISTING_GROUPS_EXPLAINED.md)** — What listing groups are; DB structure; axis resolution; API endpoints.
+- **[LISTING_GROUP_WORKFLOW.md](LISTING_GROUP_WORKFLOW.md)** — Current workflow status (create, add variants, set axes, generate titles).
+- **[SIMPLE_GROUPING_WORKFLOW.md](SIMPLE_GROUPING_WORKFLOW.md)** — Manual grouping workflow guide.
+- **[USER_GUIDE_GROUPING.md](USER_GUIDE_GROUPING.md)** — User-facing grouping guide.
 
-**Using the automatic PRODUCT_KEY grouping:**
+## Attributes
+- **[ATTRIBUTE_SCOPING.md](ATTRIBUTE_SCOPING.md)** — Product-level vs variant-level attribute scoping; queries.
+- **[ATTRIBUTE_MIGRATION_GUIDE.md](ATTRIBUTE_MIGRATION_GUIDE.md)** — How to migrate attribute values from product-level to variant-level.
+- **[ATTRIBUTE_RESEARCH_FEATURES.md](ATTRIBUTE_RESEARCH_FEATURES.md)** — Multi-field attribute search in the mapping UI.
+- **[ATTRIBUTE_ONE_DIMENSION.md](ATTRIBUTE_ONE_DIMENSION.md)** — Single-dimension attribute handling.
 
-1. **[START_HERE.md](START_HERE.md)** - Overview and quick links
-2. **[QUICK_START.md](QUICK_START.md)** - Step-by-step tutorial
-3. **[QUICK_REFERENCE.md](QUICK_REFERENCE.md)** - Quick reference card
+## API & Development
+- **[API_GUIDE.md](API_GUIDE.md)** — All API endpoints, auth, router registrations.
+- **[DEPLOYMENT.md](DEPLOYMENT.md)** — Docker image, entrypoint behaviour, runtime settings.
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** — Project dependencies and what exists in the repo.
+- **[project_overview.md](project_overview.md)** — Evidence-based project overview.
+- **[DATABASE_CLEANUP.md](DATABASE_CLEANUP.md)** — `cleanup_database` management command usage.
+- **[CHANNEL_VARIANT_AXES.md](CHANNEL_VARIANT_AXES.md)** — Channel-specific variation axes.
+- **[FRONTEND_UI_SPECS.md](FRONTEND_UI_SPECS.md)** — Frontend UI specifications.
 
-## 📘 User Guides
-
-### Import System
-- **[FRONTEND_MAPPING_GUIDE.md](FRONTEND_MAPPING_GUIDE.md)** - How to use the mapping UI
-- **[CSV_STRUCTURE_EXAMPLES.md](CSV_STRUCTURE_EXAMPLES.md)** - CSV format options
-- **[VISUAL_IMPORT_FLOW.md](VISUAL_IMPORT_FLOW.md)** - Visual diagrams
-- **[WHAT_IMPORT_DOES.md](WHAT_IMPORT_DOES.md)** - Technical details
-
-### Example Files
-- **[examples/products_import_example.csv](examples/products_import_example.csv)** - Sample data (all variants)
-- **[examples/products_import_parent_variant.csv](examples/products_import_parent_variant.csv)** - Sample data (parent + variants)
-- **[examples/README.md](examples/README.md)** - Example file explanations
-
-## 📚 Technical Documentation
-
-### Architecture
-- **[GROUPING_AND_MARKETPLACE_AXES.md](GROUPING_AND_MARKETPLACE_AXES.md)** - Product family vs listing group, and how variation axes are resolved (catalog vs marketplace)
-
-### Development
-- **[API_GUIDE.md](API_GUIDE.md)** - API endpoints and usage
-- **[DEPLOYMENT.md](DEPLOYMENT.md)** - Deployment instructions
-- **[CONTRIBUTING.md](CONTRIBUTING.md)** - Contribution guidelines
-- **[project_overview.md](project_overview.md)** - Project architecture
-
-### Updates
-- **[IMPLEMENTATION_CHECKLIST.md](IMPLEMENTATION_CHECKLIST.md)** - Feature checklist
-- **[NEW_MODELS.md](NEW_MODELS.md)** - Database model documentation
-
-## 🎯 Choose Your Path
-
-### I want to import products NOW
-→ Go to [QUICK_START.md](QUICK_START.md)
-
-### I want to understand the UI
-→ Go to [FRONTEND_MAPPING_GUIDE.md](FRONTEND_MAPPING_GUIDE.md)
-
-### I want to see CSV examples
-→ Go to [CSV_STRUCTURE_EXAMPLES.md](CSV_STRUCTURE_EXAMPLES.md)
-
-### I want technical details
-→ Go to [WHAT_IMPORT_DOES.md](WHAT_IMPORT_DOES.md)
-
-### I want a quick reference
-→ Go to [QUICK_REFERENCE.md](QUICK_REFERENCE.md)
-
----
-
-## 📖 Documentation Overview
-
-This import system handles **parent-variant products** (products with multiple variations like color/size):
-
-1. **Upload CSV** with product and variant data
-2. **Assign category** to group imports
-3. **Map columns** to database fields/attributes
-4. **Auto-detect** variation axes (color, size, etc.)
-5. **Store** products, variants, and axes
-6. **Generate titles** later using stored axes
-
-**Key Feature:** The frontend now has **search functionality** instead of auto-suggestions for accurate mapping.
-
----
-
-## 🔄 Two Workflows: Auto vs Manual Grouping
-
-### Manual Grouping (NEW - Recommended)
-
-**When to use:**
-- You want full control over grouping
-- Different channels need different axes
-- You want to review variants before grouping
-
-**How it works:**
-```
-CSV Import → Variants Created (standalone) → User Reviews → 
-User Selects Variants → System Shows Differences → 
-User Picks Axes → Product Group Created
-```
-
-**Key setting:** `group_by_product_key: false` (default)
-
-**API:** `POST /api/v1/variants/compare/` + `POST /api/v1/variants/group-with-axes/`
-
-📖 **Read:** [SIMPLE_GROUPING_WORKFLOW.md](SIMPLE_GROUPING_WORKFLOW.md)
-
----
-
-### Auto Grouping (Original)
-
-**When to use:**
-- Your CSV has a `PRODUCT_KEY` column
-- Variants are pre-grouped in your data
-- You want automatic, immediate grouping
-
-**How it works:**
-```
-CSV Import → System Groups by PRODUCT_KEY → 
-Products Created → Variants Attached → Axes Detected
-```
-
-**Key setting:** `group_by_product_key: true` (set explicitly)
-
-**CSV Column:** `PRODUCT_KEY` (or `parent_id`, `model`, etc.)
-
-📖 **Read:** [QUICK_START.md](QUICK_START.md) for auto-grouping workflow
-
----
-
-## 📊 Workflow Comparison
-
-| Feature | Manual Grouping | Auto Grouping |
-|---------|----------------|---------------|
-| **Control** | Full user control | Automatic |
-| **Timing** | After import | During import |
-| **Flexibility** | Regroup anytime | Fixed at import |
-| **Channel-specific axes** | ✅ Yes | ⚠️ Limited |
-| **Review before grouping** | ✅ Yes | ❌ No |
-| **Best for** | Multiple channels | Single channel |
-| **CSV requirement** | SKU only | PRODUCT_KEY needed |
-
-**Recommendation:** Use **Manual Grouping** for maximum flexibility.
+## Example Files
+- **[examples/](examples/)** — Sample CSV files and column mapping examples.

@@ -67,6 +67,9 @@ def generate_titles(request: TitleGenerationRequest) -> TitleGenerationResult:
                 mode_override=request.title_mode_override,
                 listing=listing,
                 template_id=request.template_id,
+                improve_title=request.improve_title,
+                title_ai_model=request.title_ai_model,
+                title_ai_instructions=request.title_ai_instructions,
             )
             # #region agent log
             _dlog("after save_generation ok", {"variant_id": variant_id}, "H1")

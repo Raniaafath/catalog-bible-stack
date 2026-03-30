@@ -107,10 +107,10 @@ export default function Auth() {
         <Card className="border-border/50 shadow-xl">
           <CardHeader className="text-center pb-2">
             <CardTitle className="text-2xl font-bold tracking-tight">
-              Product Pipeline
+              Traxe
             </CardTitle>
             <CardDescription>
-              Internal ops tool for import, translation & content generation
+              The support that helps while you build – imports, translations & content
             </CardDescription>
           </CardHeader>
           <CardContent className="pt-4">

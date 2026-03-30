@@ -303,6 +303,11 @@ def render_title(
     # Track which attribute ids have already contributed axis-based values,
     # so we can avoid duplicating them via ATTRIBUTE_VALUE parts.
     axis_attribute_ids_used: Set[int] = set()
+    # Context axis attribute ids — used to enforce axis-first ordering in ATTRIBUTE_VALUE parts.
+    context_axis_attr_ids: Set[int] = {ai.attribute_id for ai in (axes_for_context or [])}
+    # Deferred ATTRIBUTE_VALUE buckets: axes first (attr_id → text), then regular (in template order).
+    _pending_axis_attr_vals: Dict[int, str] = {}
+    _pending_regular_attr_vals: List[str] = []
 
     for part in template_parts:
         resolved = ""
@@ -392,8 +397,12 @@ def render_title(
             debug_entry["axis_values"] = axis_details
             # Record which attributes were used so we can avoid duplicating them
             # via ATTRIBUTE_VALUE parts later.
+            # Only mark as used when the axis actually resolved a value — if it
+            # resolved to empty, the ATTRIBUTE_VALUE fallback part must still fire.
             if part.attribute is not None:
-                axis_attribute_ids_used.add(part.attribute.id)
+                if resolved:
+                    axis_attribute_ids_used.add(part.attribute.id)
+                # else: resolved empty → leave fallback ATTRIBUTE_VALUE free to render
             else:
                 # When no specific attribute is chosen, all axes for this context are used.
                 if axes_for_context is not None:
@@ -419,6 +428,19 @@ def render_title(
                     pav_i18n_texts=pav_i18n_texts,
                 )
                 debug_entry.update(value_detail)
+            # Defer emission: context-axis attributes go into an ordered bucket so they
+            # always appear before non-axis attributes in the final title (axis-first rule).
+            debug_entry["resolved"] = resolved
+            debug_entry["included"] = bool(resolved)
+            parts_debug.append(debug_entry)
+            if resolved:
+                if part.attribute is not None and part.attribute.id in context_axis_attr_ids:
+                    # First occurrence wins; dedup handled by setdefault
+                    _pending_axis_attr_vals.setdefault(part.attribute.id, resolved)
+                    debug_entry["deferred_to_axis_bucket"] = True
+                else:
+                    _pending_regular_attr_vals.append(resolved)
+            continue  # Skip the shared append block below — handled above
         elif part.part_type == TemplatePart.PartType.BRAND:
             resolved = product.brand or ""
             debug_entry["source"] = "brand"
@@ -431,6 +453,15 @@ def render_title(
         parts_debug.append(debug_entry)
         if resolved:
             parts.append(resolved)
+
+    # Inject deferred ATTRIBUTE_VALUE parts: context axes first (in axes_for_context order),
+    # then non-axis attributes in template order.  AXIS_ATTRIBUTE parts (already in parts)
+    # are excluded via axis_attribute_ids_used, so no duplicates.
+    for _axis_info in (axes_for_context or []):
+        _val = _pending_axis_attr_vals.get(_axis_info.attribute_id)
+        if _val:
+            parts.append(_val)
+    parts.extend(_pending_regular_attr_vals)
 
     title = _clean_title_parts(parts, rules=rules)
     return TitleRenderResult(
@@ -459,6 +490,9 @@ def save_generation(
     mode_override: Optional[str] = None,
     listing=None,
     template_id: Optional[int] = None,
+    improve_title: bool = False,
+    title_ai_model: str = "",
+    title_ai_instructions: str = "",
 ) -> GenerationOutput:
     planner_run = run
     policy = _get_title_generation_policy(
@@ -521,6 +555,21 @@ def save_generation(
         listing=listing,
         template_id=template_id,
     )
+
+    rendered_title = result.title
+    if improve_title and rendered_title:
+        from pub.services.content_generation import improve_title_with_ai
+        from pub.services.ai_constants import DEFAULT_DESCRIPTION_AI_MODEL
+        max_chars = int((policy.rules or {}).get("title", {}).get("max_chars", 0) or 0) if isinstance((policy.rules or {}).get("title"), dict) else 0
+        polished = improve_title_with_ai(
+            raw_title=rendered_title,
+            locale_code=locale.code,
+            max_chars=max_chars,
+            user_instructions=title_ai_instructions or "",
+            model=(title_ai_model or "").strip() or DEFAULT_DESCRIPTION_AI_MODEL,
+        )
+        result.title = polished
+
     # #region agent log
     _dlog("save_generation before _reserve_unique_title", {"variant_id": variant.id}, "H2")
     # #endregion

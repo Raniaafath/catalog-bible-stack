@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Layers, Store, Trash2, MoreHorizontal } from 'lucide-react';
+import { Plus, Layers, Store, Trash2, MoreHorizontal, CheckSquare } from 'lucide-react';
 import { PageHeader } from '@/components/PageHeader';
 import { Button } from '@/components/ui/button';
 import { DataTable, Column } from '@/components/DataTable';
 import { Badge } from '@/components/ui/badge';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   Dialog,
   DialogContent,
@@ -47,6 +48,7 @@ export default function GroupsList() {
   const queryClient = useQueryClient();
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [filterChannelId, setFilterChannelId] = useState<string>('all');
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
 
   // Form state
   const [selectedProductId, setSelectedProductId] = useState<string>('');
@@ -87,8 +89,8 @@ export default function GroupsList() {
     },
     onSuccess: (data) => {
       toast({
-        title: 'Listing Group Created',
-        description: `Created listing group for ${data.product_code} on ${data.channel_code}`,
+        title: 'Marketplace listing created',
+        description: `Created marketplace listing for ${data.product_code} on ${data.channel_code}`,
       });
       queryClient.invalidateQueries({ queryKey: ['channel-listings'] });
       setShowCreateDialog(false);
@@ -121,6 +123,36 @@ export default function GroupsList() {
     },
   });
 
+  const allIds = (listings?.results || []).map((l) => l.id);
+  const allSelected = allIds.length > 0 && allIds.every((id) => selectedIds.has(id));
+  const someSelected = selectedIds.size > 0;
+
+  const toggleSelect = (id: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (allSelected) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(allIds));
+    }
+  };
+
+  const deleteSelected = async () => {
+    if (!confirm(`Delete ${selectedIds.size} listing(s)?`)) return;
+    for (const id of selectedIds) {
+      await deleteChannelListing(id);
+    }
+    toast({ title: `${selectedIds.size} listing(s) deleted` });
+    setSelectedIds(new Set());
+    queryClient.invalidateQueries({ queryKey: ['channel-listings'] });
+  };
+
   const resetForm = () => {
     setSelectedProductId('');
     setSelectedChannelId('');
@@ -132,8 +164,27 @@ export default function GroupsList() {
 
   const columns: Column<ChannelListing>[] = [
     {
+      key: 'select',
+      header: (
+        <Checkbox
+          checked={allSelected}
+          onCheckedChange={toggleSelectAll}
+          aria-label="Select all"
+        />
+      ),
+      render: (item) => (
+        <Checkbox
+          checked={selectedIds.has(item.id)}
+          onCheckedChange={() => toggleSelect(item.id)}
+          onClick={(e) => e.stopPropagation()}
+          aria-label="Select row"
+        />
+      ),
+      className: 'w-12',
+    },
+    {
       key: 'name',
-      header: 'Listing Group',
+      header: 'Marketplace listing',
       render: (item) => (
         <div className="flex items-center gap-3">
           <div className="p-2 rounded-lg bg-muted">
@@ -222,11 +273,22 @@ export default function GroupsList() {
     <>
       <div className="page-container">
         <PageHeader
-          title="Listing Groups"
-          description="Listing groups define which variants are published together on a channel and which variation axes apply (per marketplace)."
-          breadcrumbs={[{ label: 'Dashboard', href: '/' }, { label: 'Listing Groups' }]}
+          title="Marketplace listings"
+          description="Marketplace listings define which products are published together on a marketplace and which variation axes apply for that marketplace."
+          breadcrumbs={[{ label: 'Dashboard', href: '/' }, { label: 'Marketplace listings' }]}
           actions={
-            <div className="flex gap-2">
+            <div className="flex gap-2 items-center">
+              {someSelected && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-destructive border-destructive/40"
+                  onClick={deleteSelected}
+                >
+                  <Trash2 className="w-4 h-4 mr-1.5" />
+                  Delete {selectedIds.size} selected
+                </Button>
+              )}
               <Select value={filterChannelId} onValueChange={setFilterChannelId}>
                 <SelectTrigger className="w-40">
                   <SelectValue placeholder="All Channels" />
@@ -242,7 +304,7 @@ export default function GroupsList() {
               </Select>
               <Button onClick={() => setShowCreateDialog(true)}>
                 <Plus className="w-4 h-4 mr-2" />
-                New Listing Group
+                New marketplace listing
               </Button>
             </div>
           }
@@ -254,8 +316,8 @@ export default function GroupsList() {
           keyExtractor={(item) => item.id}
           isLoading={isLoading}
           error={error as Error}
-          emptyTitle="No listing groups yet"
-          emptyDescription="Create a listing group to bundle variants for a marketplace."
+          emptyTitle="No marketplace listings yet"
+          emptyDescription="Create a marketplace listing to bundle products for a marketplace and set variation axes."
           sortable
           onRowClick={(listing) => navigate(`/groups/${listing.id}`)}
         />
@@ -265,9 +327,9 @@ export default function GroupsList() {
       <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Create listing group</DialogTitle>
+            <DialogTitle>Create marketplace listing</DialogTitle>
             <DialogDescription>
-              Create a listing group for a product on a channel. You can add variants and set variation axes (e.g. color, size) for this group.
+              Create a marketplace listing for a product on a channel. You can add products and set variation axes (e.g. color, size) for this listing.
             </DialogDescription>
           </DialogHeader>
 
@@ -331,7 +393,7 @@ export default function GroupsList() {
               onClick={() => createMutation.mutate()}
               disabled={!selectedChannelId || createMutation.isPending}
             >
-              Create Listing Group
+              Create marketplace listing
             </Button>
           </DialogFooter>
         </DialogContent>

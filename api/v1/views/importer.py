@@ -101,6 +101,9 @@ class ImportAssignCategoryView(APIView):
         category = request.data.get("category")
         if not category:
             return Response({"detail": "category is required."}, status=status.HTTP_400_BAD_REQUEST)
+        # Store category directly on the import so process_import can use it without a join.
+        product_import.category = category
+        product_import.save(update_fields=["category"])
         batch = CategoryBatch.objects.create(
             product_import=product_import,
             category=category,

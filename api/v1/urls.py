@@ -65,6 +65,16 @@ urlpatterns = [
         name="export-translated-products-csv",
     ),
     path(
+        "translations/export-titles-and-attributes-csv/",
+        views.ExportTitlesAndTranslatedAttributesCsvView.as_view(),
+        name="export-titles-and-attributes-csv",
+    ),
+    path(
+        "translations/export-products-one-row-csv/",
+        views.ExportProductsOneRowCsvView.as_view(),
+        name="export-products-one-row-csv",
+    ),
+    path(
         "translations/<str:locale_code>/products/<int:product_id>/",
         views.ProductTranslationView.as_view(),
         name="product-translation",
@@ -101,6 +111,16 @@ urlpatterns = [
         name="keywords-planner-run-mapping-detail",
     ),
     path(
+        "keywords/planner-run/<int:run_id>/mappings/bulk-update/",
+        views.KeywordPlannerRunMappingsBulkUpdateView.as_view(),
+        name="keywords-planner-run-mappings-bulk-update",
+    ),
+    path(
+        "keywords/planner-run/<int:run_id>/mappings/clear-all/",
+        views.KeywordPlannerRunMappingsClearAllView.as_view(),
+        name="keywords-planner-run-mappings-clear-all",
+    ),
+    path(
         "keywords/planner-run/<int:run_id>/persist-mappings/",
         views.KeywordPlannerRunPersistMappingsView.as_view(),
         name="keywords-planner-run-persist-mappings",
@@ -121,13 +141,25 @@ urlpatterns = [
         name="keywords-planner-run-product-map-detail",
     ),
     path(
+        "keywords/planner-run/<int:run_id>/product-maps/clear-all/",
+        views.KeywordPlannerRunProductMapsClearAllView.as_view(),
+        name="keywords-planner-run-product-maps-clear-all",
+    ),
+    path(
+        "keywords/planner-run/<int:run_id>/propose-template/",
+        views.KeywordPlannerRunProposeTemplateView.as_view(),
+        name="keywords-planner-run-propose-template",
+    ),
+    path(
         "keywords/saved-terms/",
         views.SavedTermsView.as_view(),
         name="keywords-saved-terms",
     ),
+    path("templates/quick-create/", views.QuickCreateTemplateView.as_view(), name="templates-quick-create"),
     path("titles/generate/", views.TitleGenerateView.as_view(), name="titles-generate"),
     path("titles/suggestions/", views.TitleSuggestionsView.as_view(), name="titles-suggestions"),
     path("content/preview/", views.ContentPreviewView.as_view(), name="content-preview"),
+    path("content/save-selection/", views.ContentSaveSelectionView.as_view(), name="content-save-selection"),
     path("content/generate/", views.ContentGenerateView.as_view(), name="content-generate"),
     path("content-sets/<int:set_id>/items/", views.ContentSetItemView.as_view(), name="content-set-items"),
     path(
@@ -142,6 +174,7 @@ urlpatterns = [
         name="generation-batch-items",
     ),
     path("exports/create/", views.ExportJobCreateView.as_view(), name="export-job-create"),
+    path("exports/<int:job_id>/download/", views.ExportJobDownloadView.as_view(), name="export-job-download"),
     # Channel Listings (Groups) - custom actions
     path(
         "channel-listings/<int:listing_id>/move-variants/",

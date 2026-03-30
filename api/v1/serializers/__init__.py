@@ -8,7 +8,8 @@ from api.v1.serializers.catalog import (
 from api.v1.serializers.auth import LoginSerializer, SignupSerializer, UserSerializer
 from api.v1.serializers.content import LocaleSerializer
 from api.v1.serializers.importer import (
-    AttributeMappingSerializer,
+    ImportColumnMappingSerializer,
+    AttributeMappingSerializer,  # backward-compat alias
     CategoryBatchSerializer,
     ImportRowSerializer,
     ProductImportSerializer,
@@ -32,6 +33,7 @@ from api.v1.serializers.pub import (
     ChannelPolicySetSerializer,
     ContentGenerateRequestSerializer,
     ContentPreviewRequestSerializer,
+    SaveContentSelectionSerializer,
     ContentSetItemSerializer,
     ContentSetSerializer,
     ExportJobCreateSerializer,
@@ -63,7 +65,8 @@ from api.v1.serializers.translations import (
 __all__ = [
     "AttributeSerializer",
     "AttributeValueSerializer",
-    "AttributeMappingSerializer",
+    "ImportColumnMappingSerializer",
+    "AttributeMappingSerializer",  # backward-compat alias
     "CategoryBatchSerializer",
     "ChannelListingAxisSerializer",
     "ChannelListingCreateSerializer",
@@ -104,6 +107,7 @@ __all__ = [
     "TitleSuggestionsQuerySerializer",
     "ContentGenerateRequestSerializer",
     "ContentPreviewRequestSerializer",
+    "SaveContentSelectionSerializer",
     "ContentSetItemSerializer",
     "ContentSetSerializer",
     "ExportJobCreateSerializer",

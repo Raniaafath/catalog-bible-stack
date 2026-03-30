@@ -167,6 +167,7 @@ export interface Attribute {
   unit?: string | null;
   is_multi?: boolean;
   is_value_translatable?: boolean;
+  use_in_title?: boolean;
   created_at?: string;
   values?: AttributeValue[];
 }
@@ -376,15 +377,25 @@ export interface ProductTranslationUpdate {
   }>;
 }
 
-export type PlannerRunStatus = 'pending' | 'running' | 'completed' | 'approved' | 'failed';
+export type PlannerRunStatus = 'queued' | 'running' | 'success' | 'failed';
 
 export interface PlannerRun {
   id: number;
-  locale: string;
-  product_type: string;
+  source_code: string;
+  locale_code: string;
+  locale_id: number;
+  product_type_id: number | null;
+  product_type_code: string | null;
+  channel_id: number | null;
+  country_code: string | null;
+  geo_target: string | null;
+  request_json: Record<string, unknown>;
   status: PlannerRunStatus;
-  keyword_count: number;
+  error_json: Record<string, unknown> | null;
+  started_at: string | null;
+  finished_at: string | null;
   created_at: string;
+  keyword_count: number;
 }
 
 export interface PlannerKeyword {
@@ -415,14 +426,21 @@ export interface ExportProfile {
   id: number;
   name: string;
   channel: string;
+  channel_id: number;
   format: string;
 }
 
 export interface ExportJob {
   id: number;
+  profile_id: number;
   profile: string;
+  batch_id: number | null;
   status: string;
   file_url: string | null;
+  stats_json: { rows?: number; errors?: number } | null;
+  error_message: string;
+  started_at: string | null;
+  finished_at: string | null;
   created_at: string;
 }
 
@@ -870,6 +888,88 @@ export const getTranslationExportUrl = (taskId: number) =>
 export const getTranslatedProductsCsvExportUrl = (localeCode: string) =>
   `${import.meta.env.VITE_API_BASE_URL || '/api/v1'}/translations/export-translated-products-csv/?locale_code=${encodeURIComponent(localeCode)}`;
 
+/** Save current preview (description + bullets) as a draft content selection. */
+export interface SaveContentSelectionParams {
+  variant_id: number;
+  locale_code: string;
+  channel_code: string;
+  context?: string;
+  description: string;
+  bullets?: string[];
+}
+export const saveContentSelection = (data: SaveContentSelectionParams) =>
+  postData<{ id: number; status: string; detail: string }>('/content/save-selection/', data);
+
+/** URL for CSV of generated titles + translated attributes (locale required, channel optional). */
+export const getTitlesAndAttributesCsvExportUrl = (
+  localeCode: string,
+  channelCode?: string,
+  options?: { includeDescription?: boolean; attributeCodes?: string[] }
+) => {
+  const params = new URLSearchParams({ locale_code: localeCode });
+  if (channelCode) params.set('channel_code', channelCode);
+  if (options?.includeDescription !== false) params.set('include_description', '1');
+  if (options?.attributeCodes?.length) params.set('attribute_codes', options.attributeCodes.join(','));
+  // Path relative to apiClient baseURL so we don't get /api/v1/api/v1/...
+  return `translations/export-titles-and-attributes-csv/?${params.toString()}`;
+};
+
+/** Download CSV of titles + translated attributes (uses auth). */
+export async function downloadTitlesAndAttributesCsv(
+  localeCode: string,
+  channelCode?: string,
+  options?: { includeDescription?: boolean; attributeCodes?: string[] }
+): Promise<Blob> {
+  const url = getTitlesAndAttributesCsvExportUrl(localeCode, channelCode, options);
+  const res = await apiClient.get(url, { responseType: 'blob' });
+  return res.data as Blob;
+}
+
+/** One row per product/variant, attributes as columns. Same query params as getTitlesAndAttributesCsvExportUrl. */
+export const getProductsOneRowCsvExportUrl = (
+  localeCode: string,
+  channelCode?: string,
+  options?: { includeDescription?: boolean; includeNonTranslatable?: boolean; attributeCodes?: string[] }
+) => {
+  const params = new URLSearchParams({ locale_code: localeCode });
+  if (channelCode) params.set('channel_code', channelCode);
+  if (options?.includeDescription !== false) params.set('include_description', '1');
+  if (options?.includeNonTranslatable !== false) params.set('include_non_translatable', '1');
+  if (options?.attributeCodes?.length) params.set('attribute_codes', options.attributeCodes.join(','));
+  return `translations/export-products-one-row-csv/?${params.toString()}`;
+};
+
+export async function downloadProductsOneRowCsv(
+  localeCode: string,
+  channelCode?: string,
+  options?: { includeDescription?: boolean; includeNonTranslatable?: boolean; attributeCodes?: string[] }
+): Promise<Blob> {
+  const url = getProductsOneRowCsvExportUrl(localeCode, channelCode, options);
+  const res = await apiClient.get(url, { responseType: 'blob' });
+  return res.data as Blob;
+}
+
+export interface GeneratedTitleRow {
+  run_id: number;
+  variant_id: number;
+  sku: string;
+  product_id: number;
+  product_code: string;
+  channel_code: string;
+  locale_code: string;
+  title: string;
+  description?: string;
+  generated_at: string;
+}
+
+export const getExportPreview = (localeCode: string, channelCode?: string) =>
+  fetchPaginated<GeneratedTitleRow>('/generated-titles/', {
+    page: 1,
+    page_size: 5,
+    locale_code: localeCode,
+    ...(channelCode ? { channel_code: channelCode } : {}),
+  } as any);
+
 export interface TranslationStatusCounts {
   total: number;
   translated: number;
@@ -956,16 +1056,32 @@ export interface RunAttributeMap {
   status: 'suggested' | 'approved' | 'rejected';
   tagged_by: string;
   reason_code: string;
+  evidence: Record<string, unknown> | null;
   updated_at: string;
+}
+export interface MappingJobStatus {
+  run_id: number;
+  job_status: 'idle' | 'running' | 'done' | 'error';
+  result?: { products_processed: number; maps_created: number; maps_updated: number } | null;
+  error?: string | null;
+  started_at?: number | null;
 }
 export const mapPlannerRunKeywords = (runId: number, params?: { limit?: number; dry_run?: boolean }) =>
   postData<{ mapped: number; mapping_ids: number[] }>(`/keywords/planner-run/${runId}/map/`, params ?? {});
-export const getPlannerRunMappings = (runId: number, params?: { page?: number; page_size?: number }) =>
-  fetchPaginated<RunAttributeMap>(`/keywords/planner-run/${runId}/mappings/`, params);
+export const getPlannerRunMappings = (
+  runId: number,
+  params?: { page?: number; page_size?: number; status?: string; sort_by?: string; sort_dir?: string }
+) => fetchPaginated<RunAttributeMap>(`/keywords/planner-run/${runId}/mappings/`, params);
 export const updatePlannerRunMapping = (attributeMapId: number, status: 'approved' | 'rejected') =>
   patchData<{ status: string }>(`/keywords/planner-run/mappings/${attributeMapId}/`, { status });
+export const bulkUpdatePlannerRunMappings = (
+  runId: number,
+  data: { action: 'approve' | 'reject'; status?: string; attribute_code?: string; ids?: number[] }
+) => postData<{ updated: number; action: string }>(`/keywords/planner-run/${runId}/mappings/bulk-update/`, data);
 export const persistPlannerRunMappings = (runId: number) =>
   postData<{ status: string; message: string }>(`/keywords/planner-run/${runId}/persist-mappings/`, {});
+export const getMappingJobStatus = (runId: number) =>
+  fetchOne<MappingJobStatus>(`/keywords/planner-run/${runId}/persist-mappings/`);
 
 // Title generation (POST /titles/generate/)
 export interface TitleGenerateRequest {
@@ -976,6 +1092,9 @@ export interface TitleGenerateRequest {
   include_descriptions?: boolean;
   title_mode_override?: 'auto' | 'review' | null;
   context?: string;
+  improve_title?: boolean;
+  title_ai_model?: string;
+  title_ai_instructions?: string;
 }
 
 export interface TitleGenerateOutputItem {
@@ -1002,6 +1121,46 @@ export const generateTitles = (data: TitleGenerateRequest) =>
 // Content generation
 export const previewContent = (data: { variant_id: number; template?: string }) =>
   postData<{ content: string }>('/content/preview/', data);
+
+/** One attribute value used when building description/bullets for a variant (from content preview). */
+export interface ContentPreviewFeature {
+  attribute_code: string;
+  value: string;
+  source?: string;
+  attribute_value_id?: number | null;
+}
+
+/** Full content preview response: title, description, bullets, and attribute values used for this variant. */
+export interface ContentPreviewFullResponse {
+  status: string;
+  title: string;
+  bullets: string[];
+  description: string;
+  features: ContentPreviewFeature[];
+  constraint_report?: Record<string, unknown>;
+  context?: string;
+}
+
+/** Preview content for a variant with locale/channel; returns description and "attribute values used" (features). */
+/** Supported models for AI description improvement (must match backend DESCRIPTION_AI_MODELS). */
+export const DESCRIPTION_AI_MODELS = [
+  { value: 'gpt-4o-mini', label: 'GPT-4o mini (fast, cheap)' },
+  { value: 'gpt-4o', label: 'GPT-4o' },
+  { value: 'gpt-4o-turbo', label: 'GPT-4o turbo' },
+  { value: 'gpt-3.5-turbo', label: 'GPT-3.5 turbo' },
+] as const;
+
+export const contentPreviewFull = (data: {
+  variant_id: number;
+  locale_code: string;
+  channel_code: string;
+  include_descriptions?: boolean;
+  context?: string;
+  planner_run_id?: number | null;
+  description_model?: string;
+  description_instructions?: string;
+}) => postData<ContentPreviewFullResponse, typeof data>('/content/preview/', data);
+
 export const generateContent = (data: { variant_ids: number[]; template?: string }) =>
   postData<GenerationRun>('/content/generate/', data);
 export const getGenerationBatches = (params?: PaginationParams) =>
@@ -1011,7 +1170,7 @@ export const getGenerationRuns = (params?: PaginationParams) =>
 
 // Exports
 export const getExportProfiles = () => fetchPaginated<ExportProfile>('/export-profiles/');
-export const createExport = (data: { profile_id: number }) =>
+export const createExport = (data: { profile_id: number; batch_id?: number | null }) =>
   postData<ExportJob>('/exports/create/', data);
 export const getExportJobs = (params?: PaginationParams) =>
   fetchPaginated<ExportJob>('/export-jobs/', params);
@@ -1042,6 +1201,28 @@ export const moveVariantsToListing = (listingId: number, variantIds: number[]) =
 
 export const removeVariantsFromListing = (listingId: number, variantIds: number[]) =>
   postData<{ listing_id: number; removed_count: number }>(`/channel-listings/${listingId}/remove-variants/`, { variant_ids: variantIds });
+
+export interface UnmapAllPreview {
+  listing_id: number;
+  listing_str: string;
+  channel_code: string;
+  product_id: number | null;
+  product_code: string | null;
+  variant_count: number;
+  variants: { id: number; sku: string | null; source_title: string | null }[];
+}
+
+export interface UnmapAllResult {
+  listing_id: number;
+  deleted_maps: number;
+  variant_ids: number[];
+}
+
+export const previewUnmapAll = (listingId: number) =>
+  fetchOne<UnmapAllPreview>(`/channel-listings/${listingId}/unmap-all/`);
+
+export const unmapAllFromListing = (listingId: number) =>
+  postData<UnmapAllResult>(`/channel-listings/${listingId}/unmap-all/`, { confirm: true });
 
 export const getListingDifferences = (listingId: number) =>
   fetchOne<ListingDifferences>(`/channel-listings/${listingId}/differences/`);
@@ -1164,6 +1345,9 @@ export interface ListingTitleGenerationRequest {
   locale_code: string;
   template_id?: number;
   planner_run_id?: number;
+  improve_title?: boolean;
+  title_ai_model?: string;
+  title_ai_instructions?: string;
 }
 
 export interface ListingTitleGenerationResponse {
@@ -1246,6 +1430,7 @@ export const updateListingGeneratedTitle = (
 
 /** All generated titles (DB-wide), filterable by locale and channel */
 export interface AllGeneratedTitleItem {
+  run_id: number;
   variant_id: number;
   sku: string;
   product_id: number | null;
@@ -1269,6 +1454,36 @@ export const getAllGeneratedTitles = (params?: {
 }) =>
   apiClient
     .get<AllGeneratedTitlesResponse>('/generated-titles/', { params })
+    .then((res) => res.data);
+
+export const updateGeneratedTitle = (runId: number, title: string) =>
+  apiClient
+    .patch<{ run_id: number; title: string }>(`/generated-titles/?run_id=${runId}`, { title })
+    .then((res) => res.data);
+
+export const deleteGeneratedTitle = (runId: number) =>
+  apiClient.delete(`/generated-titles/?run_id=${runId}`);
+
+export interface PolishTitleResult {
+  original: string;
+  polished: string;
+  explanation: string;
+}
+
+export interface TitleAiOptionsResponse {
+  title_ai_models: string[];
+  default_title_ai_model: string;
+  default_title_ai_instructions: string;
+}
+
+export const getTitleAiOptions = () =>
+  apiClient
+    .get<TitleAiOptionsResponse>(`/generated-titles/?action=ai-options`)
+    .then((res) => res.data);
+
+export const polishGeneratedTitle = (runId: number, aiModel?: string, instructions?: string) =>
+  apiClient
+    .post<PolishTitleResult>(`/generated-titles/?action=polish`, { run_id: runId, ai_model: aiModel, instructions })
     .then((res) => res.data);
 
 export interface VariantAttributeDetailsItem {
@@ -1377,7 +1592,7 @@ export const createTemplate = (data: TemplateCreate) =>
   postData<Template, TemplateCreate>('/templates/', {
     kind: 'title',
     version: 1,
-    status: 'active',
+    status: 'draft',
     ...data,
   });
 
@@ -1431,12 +1646,19 @@ export interface PersistProductKeywordMapsRequest {
   focus_head_terms?: boolean;
   /** Prioritize hook terms (product-specific terms) */
   focus_hook_terms?: boolean;
+  /** Skip rule-based enum_maps — only text/LLM matches are saved. Use for a clean AI-only run. */
+  skip_enum_maps?: boolean;
+  /** Run in background thread (poll getMappingJobStatus for result) */
+  async_job?: boolean;
 }
 
 export interface PersistProductKeywordMapsResponse {
   products_processed: number;
   maps_created: number;
   maps_updated: number;
+  /** Present when async_job=true */
+  job_status?: 'running';
+  run_id?: number;
 }
 
 export const persistProductKeywordMaps = (runId: number, data: PersistProductKeywordMapsRequest) =>
@@ -1466,6 +1688,22 @@ export const getProductKeywordMaps = (runId: number, params?: PaginationParams &
 export const deleteProductKeywordMap = (runId: number, mapId: number) =>
   apiClient.delete(`/keywords/planner-run/${runId}/product-maps/${mapId}/`);
 
+export const clearAllProductKeywordMaps = async (runId: number): Promise<{ run_id: number; deleted: number }> => {
+  const response = await apiClient.delete<{ run_id: number; deleted: number }>(
+    `/keywords/planner-run/${runId}/product-maps/clear-all/`,
+    { data: { confirm: true } },
+  );
+  return response.data;
+};
+
+export const clearAllAttributeMaps = async (runId: number): Promise<{ run_id: number; deleted: number }> => {
+  const response = await apiClient.delete<{ run_id: number; deleted: number }>(
+    `/keywords/planner-run/${runId}/mappings/clear-all/`,
+    { data: { confirm: true } },
+  );
+  return response.data;
+};
+
 // Suggested head/hook terms (extract after mapping; user approves/denies for title generation)
 export interface SuggestedHeadTerm {
   term: string;
@@ -1483,6 +1721,8 @@ export interface SuggestedHeadTerm {
   product_type_main_category?: string | null;
   /** AI-generated short English meaning (when use_ai_meaning=1) */
   meaning_en?: string | null;
+  /** AI-generated reason why this keyword qualifies as a head term */
+  reason?: string | null;
 }
 export interface ProductDisplay {
   code: string | null;
@@ -1501,6 +1741,7 @@ export interface SuggestedHookTerm {
   avg_searches: number;
   product_id: number;
   product_display: ProductDisplay;
+  reason: string | null;
 }
 export interface ProductVariantSummary {
   id: number;
@@ -1538,11 +1779,17 @@ export const getSuggestedTerms = (
     max_hook_terms?: number;
     /** Use AI to generate short English meaning for each head term (requires OPENAI_API_KEY) */
     use_ai_meaning?: boolean;
+    /** Use AI to generate a reason why each head/hook term was chosen */
+    use_ai_reason?: boolean;
   }
 ) =>
   apiClient
     .get<SuggestedTermsResponse>(`/keywords/planner-run/${runId}/suggested-terms/`, {
-      params: { ...params, use_ai_meaning: params.use_ai_meaning ? '1' : undefined },
+      params: {
+        ...params,
+        use_ai_meaning: params.use_ai_meaning ? '1' : undefined,
+        use_ai_reason: params.use_ai_reason ? '1' : undefined,
+      },
     })
     .then((r) => r.data);
 
@@ -1666,5 +1913,56 @@ export const clearProductHeadSelection = (
   apiClient
     .post(`/products/${productId}/head-selection/`, { ...data, head_text: null })
     .then(() => undefined);
+
+export interface ProposedTemplateAttribute {
+  attribute_id: number;
+  attribute_code: string;
+  total_vol?: number;
+  keyword_count?: number;
+  /** true for axis attributes — always position 2, not reorderable */
+  fixed?: boolean;
+  /** AI-generated reason why this attribute belongs at this position (when use_ai=true) */
+  reason?: string | null;
+}
+
+export interface ProposeTemplateResponse {
+  run_id: number;
+  /** "volume" = ranked by search volume only; "ai" = AI reordered with reasons */
+  source: 'volume' | 'ai';
+  /** Variation-axis attributes — always fixed at position 2, excluded from AI candidate list */
+  axis_attributes: ProposedTemplateAttribute[];
+  proposed: ProposedTemplateAttribute[];
+}
+
+export interface QuickCreateTemplateRequest {
+  product_type_id: number;
+  channel_code: string;
+  locale_code: string;
+  run_id?: number | null;
+  ai_model?: string;
+}
+
+export interface QuickCreateTemplateResponse {
+  template_id: number;
+  /** "ai" = AI-ordered, "volume" = by search volume, "fallback" = product type attrs */
+  source: 'ai' | 'volume' | 'fallback';
+  /** Full ordered structure e.g. ["Head term", "color", "material", "dimension"] */
+  structure: string[];
+  attributes: Array<{ attribute_code: string; reason: string | null }>;
+  axis_attributes: Array<{ attribute_id: number; attribute_code: string }>;
+}
+
+export const quickCreateTemplate = (data: QuickCreateTemplateRequest) =>
+  postData<QuickCreateTemplateResponse, QuickCreateTemplateRequest>('/templates/quick-create/', data);
+
+export const proposeTemplateFromRun = (runId: number, options?: { top?: number; use_ai?: boolean }) =>
+  apiClient
+    .get<ProposeTemplateResponse>(`/keywords/planner-run/${runId}/propose-template/`, {
+      params: {
+        ...(options?.top ? { top: options.top } : {}),
+        ...(options?.use_ai ? { use_ai: '1' } : {}),
+      },
+    })
+    .then((r) => r.data);
 
 

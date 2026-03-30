@@ -1,5 +1,19 @@
 # Docker Commands for Catalog Bible Stack
 
+## "Cannot reach the server" when using Docker
+
+1. **Start the stack** (from project root, e.g. `/srv/catalog-bible-stack`):
+   ```bash
+   docker compose up -d
+   ```
+2. **Check Django is up**: `curl -s http://127.0.0.1:8000/api/v1/` should return JSON. If not, check `docker compose logs web`.
+3. **Reverse proxy must forward `/api` to Django**:
+   - Proxy on the **host**: use `proxy_pass http://127.0.0.1:8000;` (port 8000 is published).
+   - Proxy **in Docker** on the same `proxy` network: use `proxy_pass http://web:8000;`.
+4. **Frontend**: build with `VITE_API_BASE_URL=/api/v1` so the app calls the same origin; the proxy then forwards `/api` to the `web` service.
+
+---
+
 ## Quick Reference
 
 Since you're using Docker Compose, you need to run Django management commands inside the container.

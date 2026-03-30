@@ -12,7 +12,8 @@ from api.v1.serializers.translations import (
     AttributeValueI18nSerializer,
     ProductTypeI18nSerializer,
 )
-from catalog.models import Attribute, AttributeValue, Product, ProductAttributeValue, ProductType
+from catalog.models import Attribute, AttributeValue, Product, ProductAttributeValue, ProductType, Variant
+from catalog.services.channel_listings import get_all_generated_titles
 from content.models import (
     AttributeI18n,
     AttributeValueI18n,
@@ -206,7 +207,7 @@ class TranslationTaskViewSet(viewsets.ModelViewSet):
             items = []
             for i18n in queryset:
                 pav = i18n.product_attribute_value
-                source_value = pav.value_text or (pav.attribute_value.code if pav.attribute_value else "")
+                source_value = pav.attribute_value.code if pav.attribute_value_id else (pav.value_text if pav.value_text is not None else "")
                 items.append({
                     "id": i18n.id,
                     "source_id": pav.id,
@@ -316,7 +317,7 @@ class UpdateTranslationView(APIView):
                 obj.value_text = translated_value
                 obj.save(update_fields=["value_text"])
                 pav = obj.product_attribute_value
-                source_value = pav.value_text or (pav.attribute_value.code if pav.attribute_value else "")
+                source_value = pav.attribute_value.code if pav.attribute_value_id else (pav.value_text if pav.value_text is not None else "")
                 return Response({
                     "id": obj.id,
                     "source_id": pav.id,
@@ -753,4 +754,408 @@ class ExportTranslatedProductsCsvView(APIView):
         safe_code = locale_code.replace("-", "_").replace(" ", "_")
         response["Content-Disposition"] = f'attachment; filename="translated_products_{safe_code}.csv"'
         return response
-     return response
+
+
+class ExportTitlesAndTranslatedAttributesCsvView(APIView):
+    """
+    GET /translations/export-titles-and-attributes-csv/?locale_code=de-DE&channel_code=amazon
+    Returns CSV: locale, channel_code, product_code, product_name, variant_sku, generated_title,
+    attribute_code, source_value, translated_value.
+    Combines generated titles (from title generation) with translated attribute values for the locale.
+    """
+
+    def get(self, request):
+        import csv
+        from io import StringIO
+        from django.http import HttpResponse
+        from collections import defaultdict
+
+        locale_code = request.query_params.get("locale_code")
+        if not locale_code:
+            return Response(
+                {"detail": "locale_code query parameter is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        channel_code = request.query_params.get("channel_code") or None
+        include_description = request.query_params.get("include_description", "true").lower() in ("1", "true", "yes")
+        attribute_codes_param = (request.query_params.get("attribute_codes") or "").strip()
+        attribute_codes_filter = [c.strip() for c in attribute_codes_param.split(",") if c.strip()] if attribute_codes_param else None
+        try:
+            locale = Locale.objects.get(code=locale_code)
+        except Locale.DoesNotExist:
+            return Response(
+                {"detail": f"Locale {locale_code} not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Build map (variant_id, channel_code) -> {title, description?, product_code, variant_sku}
+        titles_result = get_all_generated_titles(
+            locale_code=locale_code,
+            channel_code=channel_code,
+            page=1,
+            page_size=50000,
+            include_descriptions=include_description,
+        )
+        title_map = {}
+        variant_ids_from_titles = set()
+        for r in titles_result.get("results") or []:
+            vid = r.get("variant_id")
+            ch = r.get("channel_code") or ""
+            title = r.get("title") or ""
+            if vid is not None:
+                title_map[(vid, ch)] = {
+                    "title": title,
+                    "product_code": r.get("product_code") or "",
+                    "variant_sku": r.get("sku") or "",
+                }
+                if include_description:
+                    title_map[(vid, ch)]["description"] = r.get("description") or ""
+                variant_ids_from_titles.add(vid)
+
+        # Translated attribute values for this locale (only for variants that have a generated title)
+        translatable_attrs = Attribute.objects.filter(is_value_translatable=True)
+        if attribute_codes_filter:
+            translatable_attrs = translatable_attrs.filter(code__in=attribute_codes_filter)
+        qs = (
+            ProductAttributeValueI18n.objects.filter(
+                locale=locale,
+                product_attribute_value__attribute__in=translatable_attrs,
+                product_attribute_value__variant_id__in=variant_ids_from_titles,
+            )
+            .select_related(
+                "product_attribute_value",
+                "product_attribute_value__product",
+                "product_attribute_value__variant",
+                "product_attribute_value__attribute",
+                "product_attribute_value__attribute_value",
+            )
+        )
+
+        # Group by variant_id: variant_id -> list of (attr_code, source_value, translated_value)
+        by_variant = defaultdict(list)
+        for pav_i18n in qs:
+            pav = pav_i18n.product_attribute_value
+            variant = pav.variant
+            if not variant:
+                continue
+            product = pav.product or (variant.product if variant else None)
+            product_code = (product.code if product else "") or ""
+            product_name = (getattr(product, "default_label", "") if product else "") or ""
+            variant_sku = (variant.internal_sku or variant.sku if variant else "") or ""
+            attr_code = (pav.attribute.code if pav.attribute else "") or ""
+            if pav.value_text:
+                source_value = pav.value_text
+            elif pav.attribute_value:
+                source_value = pav.attribute_value.code or ""
+            elif pav.value_number is not None:
+                source_value = str(pav.value_number)
+            elif pav.value_bool is not None:
+                source_value = "Yes" if pav.value_bool else "No"
+            else:
+                source_value = ""
+            translated_value = (pav_i18n.value_text or "").strip()
+            by_variant[variant.id].append((product_code, product_name, variant_sku, attr_code, source_value, translated_value))
+
+        buf = StringIO()
+        writer = csv.writer(buf)
+        header = [
+            "locale",
+            "channel_code",
+            "product_code",
+            "product_name",
+            "variant_sku",
+            "generated_title",
+        ]
+        if include_description:
+            header.append("generated_description")
+        header.extend(["attribute_code", "source_value", "translated_value"])
+        writer.writerow(header)
+
+        for (variant_id, ch), info in title_map.items():
+            title = info["title"]
+            prod_code = info["product_code"]
+            var_sku = info["variant_sku"]
+            description = info.get("description", "") if include_description else None
+            attrs_list = by_variant.get(variant_id, [])
+            for product_code, product_name, variant_sku, attr_code, source_value, translated_value in attrs_list:
+                row = [locale_code, ch, product_code, product_name, variant_sku, title]
+                if include_description:
+                    row.append(description)
+                row.extend([attr_code, source_value, translated_value])
+                writer.writerow(row)
+        # Rows for variants that have a title but no translated attributes
+        for (variant_id, ch), info in title_map.items():
+            if variant_id in by_variant:
+                continue
+            row = [
+                locale_code,
+                ch,
+                info["product_code"],
+                "",
+                info["variant_sku"],
+                info["title"],
+            ]
+            if include_description:
+                row.append(info.get("description", ""))
+            row.extend(["", "", ""])
+            writer.writerow(row)
+
+        response = HttpResponse(buf.getvalue(), content_type="text/csv; charset=utf-8")
+        safe_code = locale_code.replace("-", "_").replace(" ", "_")
+        safe_ch = (channel_code or "all").replace("-", "_").replace(" ", "_")
+        response["Content-Disposition"] = f'attachment; filename="titles_and_attributes_{safe_code}_{safe_ch}.csv"'
+        return response
+
+
+class ExportProductsOneRowCsvView(APIView):
+    """
+    GET /translations/export-products-one-row-csv/?locale_code=de-DE&channel_code=amazon
+    Returns CSV with one row per variant.
+    Columns: locale, channel_code, product_id, product_code, product_name, variant_id, variant_sku,
+    generated_title, [generated_description], translated attribute columns, non-translatable attribute columns.
+    """
+
+    def get(self, request):
+        import csv
+        from decimal import Decimal
+        from io import StringIO
+        from django.http import HttpResponse
+        from collections import defaultdict
+
+        locale_code = request.query_params.get("locale_code")
+        if not locale_code:
+            return Response(
+                {"detail": "locale_code query parameter is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        channel_code = request.query_params.get("channel_code") or None
+        include_description = request.query_params.get("include_description", "true").lower() in ("1", "true", "yes")
+        include_non_translatable = request.query_params.get("include_non_translatable", "true").lower() in ("1", "true", "yes")
+        attribute_codes_param = (request.query_params.get("attribute_codes") or "").strip()
+        attribute_codes_filter = [c.strip() for c in attribute_codes_param.split(",") if c.strip()] if attribute_codes_param else None
+        try:
+            locale = Locale.objects.get(code=locale_code)
+        except Locale.DoesNotExist:
+            return Response(
+                {"detail": f"Locale {locale_code} not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        titles_result = get_all_generated_titles(
+            locale_code=locale_code,
+            channel_code=channel_code,
+            page=1,
+            page_size=50000,
+            include_descriptions=include_description,
+        )
+        title_map = {}
+        variant_ids_from_titles = set()
+        for r in titles_result.get("results") or []:
+            vid = r.get("variant_id")
+            ch = r.get("channel_code") or ""
+            if vid is not None:
+                title_map[(vid, ch)] = {
+                    "product_id": r.get("product_id") or "",
+                    "product_code": r.get("product_code") or "",
+                    "variant_sku": r.get("sku") or "",
+                    "title": r.get("title") or "",
+                }
+                if include_description:
+                    title_map[(vid, ch)]["description"] = r.get("description") or ""
+                variant_ids_from_titles.add(vid)
+
+        # --- Translated attributes ---
+        translatable_attrs = Attribute.objects.filter(is_value_translatable=True).order_by("code")
+        if attribute_codes_filter:
+            translatable_attrs = translatable_attrs.filter(code__in=attribute_codes_filter)
+        attr_list = list(translatable_attrs)
+        attr_codes = [a.code for a in attr_list]
+
+        qs = (
+            ProductAttributeValueI18n.objects.filter(
+                locale=locale,
+                product_attribute_value__attribute__in=translatable_attrs,
+                product_attribute_value__variant_id__in=variant_ids_from_titles,
+            )
+            .select_related(
+                "product_attribute_value",
+                "product_attribute_value__product",
+                "product_attribute_value__variant",
+                "product_attribute_value__attribute",
+            )
+        )
+        by_variant_attr = defaultdict(dict)
+        variant_product_name = {}
+        for pav_i18n in qs:
+            pav = pav_i18n.product_attribute_value
+            variant = pav.variant
+            if not variant:
+                continue
+            vid = variant.id
+            attr_code = (pav.attribute.code if pav.attribute else "") or ""
+            translated_value = (pav_i18n.value_text or "").strip()
+            by_variant_attr[vid][attr_code] = translated_value
+            if vid not in variant_product_name:
+                product = pav.product or getattr(variant, "product", None)
+                variant_product_name[vid] = (getattr(product, "default_label", "") if product else "") or ""
+
+        # --- Non-translatable attributes ---
+        non_trans_codes = []
+        by_variant_non_trans = defaultdict(dict)
+        if include_non_translatable:
+            non_trans_qs = Attribute.objects.filter(is_value_translatable=False).order_by("code")
+            non_trans_attrs = {a.code: a for a in non_trans_qs}
+
+            # Map variant_id → product_id so we can fall back to product-level PAVs
+            variant_to_product = dict(
+                Variant.objects.filter(id__in=variant_ids_from_titles)
+                .values_list("id", "product_id")
+            )
+            product_ids = set(variant_to_product.values())
+
+            # Fetch variant-level PAVs
+            variant_pavs = (
+                ProductAttributeValue.objects.filter(
+                    variant_id__in=variant_ids_from_titles,
+                    attribute__is_value_translatable=False,
+                )
+                .select_related("attribute", "attribute_value")
+            )
+            # Fetch product-level PAVs (for attributes stored at product level)
+            product_pavs = (
+                ProductAttributeValue.objects.filter(
+                    product_id__in=product_ids,
+                    variant_id__isnull=True,
+                    attribute__is_value_translatable=False,
+                )
+                .select_related("attribute", "attribute_value")
+            )
+
+            # Index product-level PAVs: product_id → {attr_code: formatted_value}
+            by_product_attr = defaultdict(dict)
+            used_codes = set()
+            for pav in product_pavs:
+                if not pav.attribute:
+                    continue
+                code = pav.attribute.code
+                used_codes.add(code)
+                by_product_attr[pav.product_id][code] = _format_raw_pav(pav, non_trans_attrs.get(code))
+
+            # Apply variant-level PAVs first, then fall back to product-level
+            for pav in variant_pavs:
+                if not pav.attribute:
+                    continue
+                code = pav.attribute.code
+                used_codes.add(code)
+                by_variant_non_trans[pav.variant_id][code] = _format_raw_pav(pav, non_trans_attrs.get(code))
+
+            # Fill in product-level values for any variant that doesn't have a variant-level value
+            for variant_id, product_id in variant_to_product.items():
+                prod_attrs = by_product_attr.get(product_id, {})
+                for code, value in prod_attrs.items():
+                    if code not in by_variant_non_trans[variant_id]:
+                        by_variant_non_trans[variant_id][code] = value
+
+            non_trans_codes = sorted(used_codes)
+
+        # --- Build attribute label maps for readable column headers ---
+        all_attr_codes = set(attr_codes) | set(non_trans_codes)
+        attr_label_map = {}  # code -> label string
+        if all_attr_codes:
+            i18n_labels = (
+                AttributeI18n.objects.filter(
+                    attribute__code__in=all_attr_codes,
+                    locale=locale,
+                )
+                .select_related("attribute")
+            )
+            for i18n in i18n_labels:
+                attr_label_map[i18n.attribute.code] = i18n.label
+
+        # Fetch units for non-translatable attributes (already in non_trans_attrs)
+        non_trans_attrs_full = {}
+        if include_non_translatable:
+            non_trans_attrs_full = {
+                a.code: a
+                for a in Attribute.objects.filter(code__in=non_trans_codes)
+            }
+        trans_attrs_full = {a.code: a for a in attr_list}
+
+        def _col_header(code: str, attribute=None) -> str:
+            label = attr_label_map.get(code) or code.replace("_", " ").title()
+            unit = getattr(attribute, "unit", None) if attribute else None
+            if unit:
+                return f"{label} ({unit})"
+            return label
+
+        buf = StringIO()
+        writer = csv.writer(buf)
+
+        # Section 1: product / variant identification
+        header = [
+            "Language",
+            "Channel",
+            "Product Code",
+            "Product Name",
+            "Variant SKU",
+        ]
+        # Section 2: generated content
+        header.append("Generated Title")
+        if include_description:
+            header.append("Generated Description")
+        # Section 3: translated attributes (labelled)
+        for code in attr_codes:
+            header.append(_col_header(code, trans_attrs_full.get(code)))
+        # Section 4: non-translatable attributes (labelled + unit)
+        for code in non_trans_codes:
+            header.append(_col_header(code, non_trans_attrs_full.get(code)))
+        writer.writerow(header)
+
+        for (variant_id, ch), info in title_map.items():
+            product_name = variant_product_name.get(variant_id, "")
+            row = [
+                locale_code,
+                ch,
+                info.get("product_code", ""),
+                product_name,
+                info.get("variant_sku", ""),
+                info.get("title", ""),
+            ]
+            if include_description:
+                row.append(info.get("description", ""))
+            for attr_code in attr_codes:
+                row.append(by_variant_attr.get(variant_id, {}).get(attr_code, ""))
+            for code in non_trans_codes:
+                row.append(by_variant_non_trans.get(variant_id, {}).get(code, ""))
+            writer.writerow(row)
+
+        response = HttpResponse(buf.getvalue(), content_type="text/csv; charset=utf-8")
+        safe_code = locale_code.replace("-", "_").replace(" ", "_")
+        safe_ch = (channel_code or "all").replace("-", "_").replace(" ", "_")
+        response["Content-Disposition"] = f'attachment; filename="products_one_row_{safe_code}_{safe_ch}.csv"'
+        return response
+
+
+def _format_raw_pav(pav: "ProductAttributeValue", attribute: "Attribute | None") -> str:
+    """Format a raw ProductAttributeValue to a plain string for CSV export."""
+    from decimal import Decimal
+    attr = attribute or pav.attribute
+    if attr and attr.data_type == "enum" and pav.attribute_value:
+        return pav.attribute_value.code or ""
+    if pav.value_text:
+        text = pav.value_text
+    elif pav.value_number is not None:
+        n = pav.value_number
+        if isinstance(n, Decimal):
+            text = str(int(n)) if n == n.to_integral_value() else format(n.normalize(), "f").rstrip("0").rstrip(".")
+        else:
+            text = str(n)
+    elif pav.value_bool is not None:
+        text = "Yes" if pav.value_bool else "No"
+    elif pav.value_json:
+        text = str(pav.value_json)
+    else:
+        return ""
+    if pav.unit:
+        return f"{text} {pav.unit}".strip()
+    return text

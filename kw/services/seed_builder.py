@@ -80,10 +80,8 @@ PLACEHOLDER_TERMS = {
 DIMENSION_RE = re.compile(r"^\d{2,4}\s*(?:[x×]\s*\d{2,4})+(?:\s*(?:cm|mm))?$", re.I)
 
 # Title-eligible attribute codes per product_type code (quick config without migration).
-TITLE_ELIGIBLE_ATTRS_BY_PT: dict[str, set[str]] = {
-    # Example: restrict seeds for receveur-de-doucher-encastrer to title attributes only.
-    "receveur-de-doucher-encastrer": {"shape", "color", "material", "installation", "drain_position", "type-de-pose"},
-}
+# Empty by default — filtering is driven by Attribute.use_in_title in the database.
+TITLE_ELIGIBLE_ATTRS_BY_PT: dict[str, set[str]] = {}
 
 
 def _looks_like_sku_or_slug(term: str) -> bool:

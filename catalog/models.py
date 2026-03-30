@@ -129,6 +129,7 @@ class Attribute(models.Model):
     unit = models.CharField(max_length=50, null=True, blank=True)
     is_multi = models.BooleanField(default=False)
     is_value_translatable = models.BooleanField(default=False)
+    use_in_title = models.BooleanField(default=True, help_text="Include this attribute as a candidate in title templates. Uncheck for internal/operational attributes (e.g. stock_qty, barcode).")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

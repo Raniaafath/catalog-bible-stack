@@ -1,5 +1,7 @@
 import logging
+import os
 
+from django.http import FileResponse, Http404
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny
@@ -14,6 +16,7 @@ from api.v1.serializers import (
     ChannelListingSerializer,
     ContentGenerateRequestSerializer,
     ContentPreviewRequestSerializer,
+    SaveContentSelectionSerializer,
     ContentSetItemSerializer,
     ContentSetSerializer,
     ChannelSerializer,
@@ -79,7 +82,12 @@ from pub.services.content_batches import create_batch
 from pub.services.export_service import run_export_job
 from pub.services.dtos import TitleGenerationRequest
 from pub.services.generation_service import TitleGenerationServiceError, generate_titles
-from pub.services.content_generation import generate_content, preview_content
+from pub.services.ai_constants import (
+    DEFAULT_DESCRIPTION_AI_MODEL,
+    DEFAULT_TITLE_POLISH_INSTRUCTIONS,
+    OPENAI_TITLE_AI_MODELS,
+)
+from pub.services.content_generation import generate_content, preview_content, save_content_selection
 from pub.services.title_renderer import TitleApprovalRequired, TitleRenderError, get_title_suggestions
 
 
@@ -116,6 +124,273 @@ class TemplatePartViewSet(IntegrityErrorTo409Mixin, viewsets.ModelViewSet):
         return queryset
 
 
+class QuickCreateTemplateView(APIView):
+    """
+    POST /templates/quick-create/
+    Create a template in one shot using AI to select and order attributes.
+    Works for any product type and any language.
+    If a keyword run is provided, attribute candidates are ranked by search volume first.
+    If no run is provided, falls back to all use_in_title attributes for the product type.
+    """
+
+    def post(self, request):
+        import json, os
+        from django.db import transaction
+        from catalog.models import ProductType, ProductTypeAttribute
+
+        product_type_id = request.data.get("product_type_id")
+        channel_code = (request.data.get("channel_code") or "").strip()
+        locale_code = (request.data.get("locale_code") or "").strip()
+        run_id = request.data.get("run_id")
+        ai_model = (request.data.get("ai_model") or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")).strip()
+
+        if not product_type_id or not channel_code or not locale_code:
+            return Response({"detail": "product_type_id, channel_code, and locale_code are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            product_type = ProductType.objects.get(id=product_type_id)
+        except ProductType.DoesNotExist:
+            return Response({"detail": "Product type not found."}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            channel = Channel.objects.get(code=channel_code, is_active=True)
+        except Channel.DoesNotExist:
+            return Response({"detail": "Channel not found or inactive."}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            locale = Locale.objects.get(code=locale_code)
+        except Locale.DoesNotExist:
+            return Response({"detail": "Locale not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Next version number for this scope
+        existing_versions = list(
+            Template.objects.filter(
+                product_type=product_type, channel=channel, locale=locale, kind=Template.Kind.TITLE
+            ).values_list("version", flat=True)
+        )
+        next_version = (max(existing_versions) + 1) if existing_versions else 1
+
+        # ── Axis attributes (variant-level → always position 2) ─────────────
+        axis_attributes = []
+        axis_attr_codes: set = set()
+        for pta in ProductTypeAttribute.objects.filter(
+            product_type=product_type, variant_level=True
+        ).select_related("attribute").order_by("id"):
+            axis_attributes.append({"attribute_id": pta.attribute.id, "attribute_code": pta.attribute.code})
+            axis_attr_codes.add(pta.attribute.code)
+
+        # ── Candidate attributes for positions 3+ ───────────────────────────
+        proposed = []
+        source = "fallback"
+
+        if run_id:
+            try:
+                from kw.models import PlannerRun, ProductKeywordMap, Metric
+                from django.db.models import Max, Sum, Count, OuterRef, Subquery, Value, IntegerField
+                from django.db.models.functions import Coalesce
+                run = PlannerRun.objects.filter(id=run_id).first()
+                if run:
+                    kw_vol_sq = (
+                        Metric.objects.filter(keyword_id=OuterRef("keyword_id"))
+                        .values("keyword_id").annotate(v=Max("avg_searches")).values("v")[:1]
+                    )
+                    rows = (
+                        ProductKeywordMap.objects.filter(run=run, attribute__isnull=False, attribute__use_in_title=True)
+                        .annotate(kw_vol=Subquery(kw_vol_sq, output_field=IntegerField()))
+                        .values("attribute_id", "attribute__code", "attribute__data_type", "attribute__unit")
+                        .annotate(
+                            total_vol=Sum(Coalesce("kw_vol", Value(0))),
+                            keyword_count=Count("keyword_id", distinct=True),
+                        )
+                        .order_by("-total_vol")[:10]
+                    )
+                    proposed = [
+                        {
+                            "attribute_id": r["attribute_id"],
+                            "attribute_code": r["attribute__code"],
+                            "data_type": r["attribute__data_type"],
+                            "unit": r["attribute__unit"],
+                            "total_vol": r["total_vol"] or 0,
+                            "reason": None,
+                        }
+                        for r in rows if r["attribute__code"] not in axis_attr_codes
+                    ]
+                    source = "volume"
+            except Exception:
+                pass
+
+        if not proposed:
+            # First try product type attributes
+            pta_qs = list(ProductTypeAttribute.objects.filter(
+                product_type=product_type, attribute__use_in_title=True
+            ).select_related("attribute").exclude(attribute__code__in=axis_attr_codes).order_by("id"))
+            if pta_qs:
+                for pta in pta_qs:
+                    proposed.append({
+                        "attribute_id": pta.attribute.id,
+                        "attribute_code": pta.attribute.code,
+                        "data_type": pta.attribute.data_type,
+                        "unit": getattr(pta.attribute, "unit", None),
+                        "total_vol": 0,
+                        "reason": None,
+                    })
+            else:
+                # No product type attributes configured — fall back to ALL use_in_title attributes
+                # so it works with any product type without needing pre-configuration
+                for attr in Attribute.objects.filter(use_in_title=True).exclude(code__in=axis_attr_codes).order_by("code"):
+                    proposed.append({
+                        "attribute_id": attr.id,
+                        "attribute_code": attr.code,
+                        "data_type": attr.data_type,
+                        "unit": getattr(attr, "unit", None),
+                        "total_vol": 0,
+                        "reason": None,
+                    })
+            source = "fallback"
+
+        # ── AI reorder + select ──────────────────────────────────────────────
+        if proposed:
+            pt_label = (product_type.default_label or product_type.code or "").strip()
+            pt_category = (getattr(product_type, "main_category", "") or "").strip()
+            product_context = f"{pt_label} ({pt_category})" if pt_category else pt_label
+            lang_code = locale_code.split("-")[0].lower()
+            lang_name = {
+                "fr": "French", "de": "German", "es": "Spanish", "it": "Italian",
+                "pt": "Portuguese", "nl": "Dutch", "pl": "Polish", "en": "English",
+                "ja": "Japanese", "zh": "Chinese", "ko": "Korean", "ar": "Arabic",
+                "sv": "Swedish", "da": "Danish", "fi": "Finnish", "no": "Norwegian",
+            }.get(lang_code, locale_code)
+            first_attr_pos = 3 + len(axis_attributes)  # 1=head, 2=hook, 3..N=axis attrs
+            attr_lines = "\n".join(
+                f"{first_attr_pos + i}. {p['attribute_code']}"
+                f"{' [' + p['data_type'] + ']' if p.get('data_type') else ''}"
+                f"{' (unit: ' + p['unit'] + ')' if p.get('unit') else ''}"
+                + (f" — {p['total_vol']:,} searches" if p.get("total_vol") else "")
+                for i, p in enumerate(proposed)
+            )
+            axis_label = ", ".join(a["attribute_code"] for a in axis_attributes) if axis_attributes else "none configured"
+            system_prompt = (
+                f"You are an e-commerce SEO expert selecting product attributes for marketplace titles in {lang_name} ({locale_code}). "
+                "The title structure is fixed: [head term] → [hook] → [variation axis attributes] → [your attributes]. "
+                "Select and order the most buyer-relevant descriptive attributes from the candidates below. "
+                "Exclude attributes that are redundant or low-value for this product type. "
+                "Broad/defining attributes go first, specific/technical ones last. "
+                "Do NOT add new attributes — only pick from the provided list. "
+                "Write your reasons in the target language. Return valid JSON only."
+            )
+            user_prompt = (
+                f"Product type: {product_context}\n"
+                f"Locale: {locale_code} ({lang_name})\n\n"
+                f"Fixed title structure:\n"
+                f"  Position 1: [head term] — product category label\n"
+                f"  Position 2: [hook] — product name/model\n"
+                f"  Position 3+: [{axis_label}] — variation axis, already included automatically\n\n"
+                f"Candidate descriptive attributes for the remaining positions:\n{attr_lines}\n\n"
+                "Select the best ones and order them. Do NOT re-select the axis attributes already listed above.\n"
+                'Return JSON: {"proposed": [{"attribute_code": "...", "reason": "..."}]}'
+            )
+            raw = None
+            try:
+                if ai_model.startswith("claude-"):
+                    api_key = os.environ.get("ANTHROPIC_API_KEY")
+                    if api_key:
+                        import anthropic
+                        client = anthropic.Anthropic(api_key=api_key)
+                        msg = client.messages.create(
+                            model=ai_model, max_tokens=900, system=system_prompt,
+                            messages=[{"role": "user", "content": user_prompt}], temperature=0,
+                        )
+                        raw = msg.content[0].text if msg.content else None
+                elif ai_model.startswith("gemini-"):
+                    api_key = os.environ.get("GOOGLE_AI_API_KEY")
+                    if api_key:
+                        import google.generativeai as genai
+                        genai.configure(api_key=api_key)
+                        g = genai.GenerativeModel(
+                            model_name=ai_model, system_instruction=system_prompt,
+                            generation_config={"temperature": 0, "max_output_tokens": 900, "response_mime_type": "application/json"},
+                        )
+                        raw = g.generate_content(user_prompt).text
+                else:
+                    api_key = os.environ.get("OPENAI_API_KEY")
+                    if api_key:
+                        from openai import OpenAI
+                        client = OpenAI(api_key=api_key)
+                        resp = client.chat.completions.create(
+                            model=ai_model, temperature=0, max_tokens=900,
+                            messages=[
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": user_prompt},
+                            ],
+                        )
+                        raw = resp.choices[0].message.content or None
+            except Exception:
+                pass
+
+            if raw:
+                try:
+                    cleaned = raw.strip()
+                    if cleaned.startswith("```"):
+                        lines = cleaned.split("\n")
+                        cleaned = "\n".join(lines[1:]).rsplit("```", 1)[0]
+                    ai_result = json.loads(cleaned)
+                    ai_codes = [x["attribute_code"] for x in ai_result.get("proposed", []) if x.get("attribute_code")]
+                    reasons = {x["attribute_code"]: x.get("reason") for x in ai_result.get("proposed", [])}
+                    code_to_attr = {p["attribute_code"]: p for p in proposed}
+                    reordered = []
+                    for code in ai_codes:
+                        if code in code_to_attr:
+                            a = dict(code_to_attr[code])
+                            a["reason"] = reasons.get(code)
+                            reordered.append(a)
+                    if reordered:
+                        proposed = reordered
+                        source = "ai"
+                except Exception:
+                    pass
+
+        # ── Create template + parts atomically ──────────────────────────────
+        with transaction.atomic():
+            template = Template.objects.create(
+                product_type=product_type, locale=locale, channel=channel,
+                kind=Template.Kind.TITLE, version=next_version, status=Template.Status.DRAFT,
+            )
+            pos = 0
+            # Position 1: head term (always)
+            TemplatePart.objects.create(template=template, position=pos, part_type=TemplatePart.PartType.HEAD_TERM)
+            pos += 1
+            # Position 2: hook term (always)
+            TemplatePart.objects.create(template=template, position=pos, part_type=TemplatePart.PartType.HOOK_TERM)
+            pos += 1
+            # Position 3+: for each variant-level axis, create AXIS_ATTRIBUTE + ATTRIBUTE_VALUE pair.
+            # Renderer skips the ATTRIBUTE_VALUE if AXIS_ATTRIBUTE already rendered it (dedup at line 413).
+            # If the product doesn't use that attribute as axis, ATTRIBUTE_VALUE renders it as fallback.
+            axis_attr_objs = {a["attribute_code"]: Attribute.objects.filter(id=a["attribute_id"]).first() for a in axis_attributes}
+            for a in axis_attributes:
+                attr_obj = axis_attr_objs.get(a["attribute_code"])
+                if attr_obj:
+                    TemplatePart.objects.create(template=template, position=pos, part_type=TemplatePart.PartType.AXIS_ATTRIBUTE, attribute=attr_obj)
+                    pos += 1
+                    TemplatePart.objects.create(template=template, position=pos, part_type=TemplatePart.PartType.ATTRIBUTE_VALUE, attribute=attr_obj)
+                    pos += 1
+            # Then: AI-picked attribute values (already deduped against axis_attr_codes)
+            for p in proposed:
+                attr_obj = Attribute.objects.filter(id=p["attribute_id"]).first()
+                if attr_obj:
+                    TemplatePart.objects.create(template=template, position=pos, part_type=TemplatePart.PartType.ATTRIBUTE_VALUE, attribute=attr_obj)
+                    pos += 1
+
+        structure = ["Head term", "Hook term"]
+        structure += [f"Axis: {a['attribute_code']}" for a in axis_attributes]
+        structure += [p["attribute_code"] for p in proposed]
+
+        return Response({
+            "template_id": template.id,
+            "source": source,
+            "structure": structure,
+            "attributes": [{"attribute_code": p["attribute_code"], "reason": p.get("reason")} for p in proposed],
+            "axis_attributes": axis_attributes,
+        }, status=status.HTTP_201_CREATED)
+
+
 class GenerationRunViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = GenerationRun.objects.select_related(
         "product",
@@ -143,7 +418,7 @@ class ExportProfileViewSet(IntegrityErrorTo409Mixin, viewsets.ModelViewSet):
 
 
 class ExportJobViewSet(viewsets.ReadOnlyModelViewSet):
-    queryset = ExportJob.objects.all().order_by("-id")
+    queryset = ExportJob.objects.select_related("profile").order_by("-id")
     serializer_class = ExportJobSerializer
 
 
@@ -216,6 +491,9 @@ class TitleGenerateView(APIView):
             include_descriptions=serializer.validated_data.get("include_descriptions", False),
             title_mode_override=serializer.validated_data.get("title_mode_override"),
             context=serializer.validated_data.get("context", "title"),
+            improve_title=serializer.validated_data.get("improve_title", False),
+            title_ai_model=serializer.validated_data.get("title_ai_model", ""),
+            title_ai_instructions=serializer.validated_data.get("title_ai_instructions", ""),
         )
         try:
             result = generate_titles(request_dto)
@@ -250,13 +528,21 @@ class ContentPreviewView(APIView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        variant = Variant.objects.select_related("product", "product__product_type").get(id=data["variant_id"])
-        locale = Locale.objects.get(code=data["locale_code"])
-        channel = Channel.objects.get(code=data["channel_code"])
+        try:
+            variant = Variant.objects.select_related("product", "product__product_type").get(id=data["variant_id"])
+            locale = Locale.objects.get(code=data["locale_code"])
+            channel = Channel.objects.get(code=data["channel_code"])
+        except (Variant.DoesNotExist, Locale.DoesNotExist, Channel.DoesNotExist) as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_404_NOT_FOUND)
         planner_run = None
         if data.get("planner_run_id"):
-            planner_run = PlannerRun.objects.get(id=data["planner_run_id"])
+            try:
+                planner_run = PlannerRun.objects.get(id=data["planner_run_id"])
+            except PlannerRun.DoesNotExist:
+                return Response({"detail": "planner_run_id not found."}, status=status.HTTP_404_NOT_FOUND)
 
+        instructions = (data.get("description_instructions") or "").strip()
+        improve_description = bool(data.get("include_descriptions") and instructions)
         response = preview_content(
             variant=variant,
             locale=locale,
@@ -264,8 +550,35 @@ class ContentPreviewView(APIView):
             run=planner_run,
             context=data.get("context", "title"),
             include_descriptions=data.get("include_descriptions", False),
+            improve_description=improve_description,
+            description_user_instructions=instructions,
+            description_ai_model=(data.get("description_model") or DEFAULT_DESCRIPTION_AI_MODEL).strip() or DEFAULT_DESCRIPTION_AI_MODEL,
         )
         return Response(response, status=status.HTTP_200_OK)
+
+
+class ContentSaveSelectionView(APIView):
+    """
+    Save current preview (description + bullets) as a draft content selection.
+    POST /content/save-selection/
+    """
+
+    def post(self, request):
+        serializer = SaveContentSelectionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        selection = save_content_selection(
+            variant_id=data["variant_id"],
+            locale_code=data["locale_code"],
+            channel_code=data["channel_code"],
+            description=data["description"],
+            bullets=data.get("bullets") or [],
+            context=data.get("context", "title"),
+        )
+        return Response(
+            {"id": selection.id, "status": selection.status, "detail": "Content saved as draft."},
+            status=status.HTTP_200_OK,
+        )
 
 
 class VariantAttributeDetailsView(APIView):
@@ -372,6 +685,10 @@ class VariantAttributeDetailsView(APIView):
                 # Determine raw value from underlying fields
                 if pav.value_text not in (None, ""):
                     raw_value = pav.value_text
+                elif pav.attribute_value_id:
+                    # text attrs stored as AttributeValue FK by importer
+                    av = pav.attribute_value
+                    raw_value = av.code if av else None
                 elif pav.value_number is not None:
                     raw_value = str(pav.value_number)
                 elif pav.value_bool is not None:
@@ -441,6 +758,16 @@ class ContentGenerateView(APIView):
                         "preview_title": exc.preview_title,
                     }
                 )
+            except Exception as exc:
+                logger.exception("ContentGenerateView: error for variant %s: %s", variant.id, exc)
+                results.append(
+                    {
+                        "status": "error",
+                        "variant_id": variant.id,
+                        "product_id": variant.product_id,
+                        "detail": str(exc),
+                    }
+                )
         return Response({"results": results}, status=status.HTTP_202_ACCEPTED)
 
 
@@ -505,10 +832,34 @@ class ExportJobCreateView(APIView):
         data = serializer.validated_data
         job = ExportJob.objects.create(
             profile_id=data["profile_id"],
-            batch_id=data["batch_id"],
+            batch_id=data.get("batch_id"),
         )
         run_export_job(job=job)
-        return Response(ExportJobSerializer(job).data, status=status.HTTP_201_CREATED)
+        return Response(ExportJobSerializer(job, context={"request": request}).data, status=status.HTTP_201_CREATED)
+
+
+class ExportJobDownloadView(APIView):
+    def get(self, request, job_id):
+        try:
+            job = ExportJob.objects.get(id=job_id)
+        except ExportJob.DoesNotExist:
+            raise Http404
+
+        if job.status != ExportJob.Status.DONE or not job.result_file:
+            return Response({"error": "File not available."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not os.path.exists(job.result_file):
+            return Response({"error": "File not found on disk."}, status=status.HTTP_404_NOT_FOUND)
+
+        ext = job.result_file.rsplit(".", 1)[-1].lower() if "." in job.result_file else "csv"
+        if ext == "xlsx":
+            content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        else:
+            content_type = "text/csv"
+        filename = os.path.basename(job.result_file)
+        response = FileResponse(open(job.result_file, "rb"), content_type=content_type)
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
 
 
 class TitleSuggestionsView(APIView):
@@ -828,7 +1179,10 @@ class ChannelListingGenerateTitlesView(APIView):
     {
         "locale_code": "en",
         "template_id": 123,  // optional
-        "planner_run_id": 456  // optional
+        "planner_run_id": 456,  // optional
+        "improve_title": true,  // optional
+        "title_ai_model": "gpt-4o",  // optional
+        "title_ai_instructions": "..."  // optional
     }
     """
     
@@ -838,6 +1192,9 @@ class ChannelListingGenerateTitlesView(APIView):
             locale_code = data.get('locale_code')
             raw_template_id = data.get('template_id')
             raw_planner_run_id = data.get('planner_run_id')
+            improve_title = bool(data.get('improve_title', False))
+            title_ai_model = (data.get('title_ai_model') or '').strip()
+            title_ai_instructions = (data.get('title_ai_instructions') or '').strip()
             template_id = None
             planner_run_id = None
             if raw_template_id is not None:
@@ -870,20 +1227,14 @@ class ChannelListingGenerateTitlesView(APIView):
             )
 
         try:
-            # #region agent log
-            try:
-                from core.debug_utils import DEBUG_LOG_PATH
-                import json
-                with open(DEBUG_LOG_PATH, "a") as f:
-                    f.write(json.dumps({"message": "view before generate_titles_for_listing", "data": {"listing_id": listing_id}, "hypothesisId": "H5", "location": "pub.views"}) + "\n")
-            except Exception:
-                pass
-            # #endregion
             result = generate_titles_for_listing(
                 listing_id=listing_id,
                 locale_code=str(locale_code),
                 template_id=template_id,
                 planner_run_id=planner_run_id,
+                improve_title=improve_title,
+                title_ai_model=title_ai_model,
+                title_ai_instructions=title_ai_instructions,
             )
         except ListingNotFoundError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_404_NOT_FOUND)
@@ -897,15 +1248,6 @@ class ChannelListingGenerateTitlesView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         except Exception as exc:
-            # #region agent log
-            try:
-                from core.debug_utils import DEBUG_LOG_PATH
-                import json
-                with open(DEBUG_LOG_PATH, "a") as f:
-                    f.write(json.dumps({"message": "view except", "data": {"exc_type": type(exc).__name__, "exc_msg": str(exc)[:200]}, "hypothesisId": "H5", "location": "pub.views"}) + "\n")
-            except Exception:
-                pass
-            # #endregion
             logger.exception("channel-listings generate-titles: %s", exc)
             return Response(
                 {"detail": str(exc) or "Title generation failed. Check server logs."},
@@ -1100,12 +1442,33 @@ class ProductHeadSelectionView(APIView):
 
 class AllGeneratedTitlesView(APIView):
     """
-    GET /generated-titles/?locale_code=xx&channel_code=yy&page=1&page_size=100
-    Returns all generated titles in the database, optionally filtered by locale and/or channel.
-    Latest per (variant, channel, locale). Paginated.
+    GET    /generated-titles/                       — list (paginated, filterable)
+    PATCH  /generated-titles/?run_id=X              — edit title text
+    DELETE /generated-titles/?run_id=X              — delete generation run + outputs
     """
 
     def get(self, request):
+        action = (request.query_params.get("action") or "").strip().lower()
+        if action == "ai-options":
+            available_models = sorted(OPENAI_TITLE_AI_MODELS)
+            env_default = (os.environ.get("TITLE_AI_MODEL_DEFAULT") or os.environ.get("OPENAI_MODEL") or "").strip()
+            default_model = env_default if env_default in OPENAI_TITLE_AI_MODELS else (
+                "gpt-4o" if "gpt-4o" in OPENAI_TITLE_AI_MODELS else DEFAULT_DESCRIPTION_AI_MODEL
+            )
+            if default_model not in OPENAI_TITLE_AI_MODELS and available_models:
+                default_model = available_models[0]
+            default_instructions = (
+                os.environ.get("TITLE_AI_INSTRUCTIONS_DEFAULT") or DEFAULT_TITLE_POLISH_INSTRUCTIONS
+            ).strip()
+            return Response(
+                {
+                    "title_ai_models": available_models,
+                    "default_title_ai_model": default_model,
+                    "default_title_ai_instructions": default_instructions,
+                },
+                status=status.HTTP_200_OK,
+            )
+
         locale_code = request.query_params.get("locale_code") or None
         channel_code = request.query_params.get("channel_code") or None
         try:
@@ -1115,10 +1478,83 @@ class AllGeneratedTitlesView(APIView):
             page, page_size = 1, 100
         page_size = min(max(1, page_size), 500)
         page = max(1, page)
+        include_descriptions = request.query_params.get("include_descriptions", "").lower() in ("1", "true", "yes")
         result = get_all_generated_titles(
             locale_code=locale_code,
             channel_code=channel_code,
             page=page,
             page_size=page_size,
+            include_descriptions=include_descriptions,
         )
         return Response(result, status=status.HTTP_200_OK)
+
+    def patch(self, request):
+        run_id = request.query_params.get("run_id")
+        title = request.data.get("title")
+        if not run_id:
+            return Response({"detail": "run_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        if title is None:
+            return Response({"detail": "title is required."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            run = GenerationRun.objects.get(id=run_id)
+        except GenerationRun.DoesNotExist:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        from pub.models import GenerationOutput
+        output = run.outputs.filter(field="title").first() or run.outputs.first()
+        if output:
+            output.text = str(title)
+            output.save(update_fields=["text"])
+        else:
+            GenerationOutput.objects.create(run=run, field="title", text=str(title))
+        return Response({"run_id": run.id, "title": str(title)}, status=status.HTTP_200_OK)
+
+    def delete(self, request):
+        run_id = request.query_params.get("run_id")
+        if not run_id:
+            return Response({"detail": "run_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            run = GenerationRun.objects.get(id=run_id)
+        except GenerationRun.DoesNotExist:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        run.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    def post(self, request):
+        """
+        POST /generated-titles/?action=polish
+        Body: { run_id, ai_model?, instructions? }
+        Returns { original, polished, explanation }
+        """
+        action = request.query_params.get("action")
+        if action != "polish":
+            return Response({"detail": "Unknown action."}, status=status.HTTP_400_BAD_REQUEST)
+
+        run_id = request.data.get("run_id")
+        ai_model = (request.data.get("ai_model") or DEFAULT_DESCRIPTION_AI_MODEL).strip()
+        instructions = (request.data.get("instructions") or "").strip()
+
+        if ai_model and ai_model not in OPENAI_TITLE_AI_MODELS:
+            return Response(
+                {"detail": f"Unsupported model '{ai_model}'. Allowed: {', '.join(sorted(OPENAI_TITLE_AI_MODELS))}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not run_id:
+            return Response({"detail": "run_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            run = GenerationRun.objects.get(id=run_id)
+        except GenerationRun.DoesNotExist:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        output = run.outputs.filter(field="title").first() or run.outputs.first()
+        original = output.text if output else ""
+        locale_code = run.locale.code if run.locale else "fr-FR"
+
+        from pub.services.content_generation import polish_title_with_explanation
+        result = polish_title_with_explanation(
+            raw_title=original,
+            locale_code=locale_code,
+            user_instructions=instructions,
+            model=ai_model or DEFAULT_DESCRIPTION_AI_MODEL,
+        )
+        return Response({"original": original, **result}, status=status.HTTP_200_OK)

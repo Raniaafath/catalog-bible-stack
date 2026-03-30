@@ -402,7 +402,7 @@ class VariantAttributeValueWriteSerializer(serializers.Serializer):
 class AttributeSerializer(serializers.ModelSerializer):
     class Meta:
         model = Attribute
-        fields = ["id", "code", "data_type", "unit", "is_multi", "is_value_translatable", "created_at"]
+        fields = ["id", "code", "data_type", "unit", "is_multi", "is_value_translatable", "use_in_title", "created_at"]
         read_only_fields = ["id", "created_at"]
 
     def validate_code(self, value):

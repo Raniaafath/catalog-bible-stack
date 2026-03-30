@@ -6,6 +6,38 @@ import re
 from contextlib import nullcontext
 from typing import List
 
+
+def _numeric_substring_false_match(phrase: str, key_term: str) -> bool:
+    """
+    Return True if this contains-match is likely wrong: key_term is numeric and
+    appears as a strict substring of a longer number in the phrase.
+    E.g. key_term="40" inside phrase "140" → True (false positive).
+    """
+    if not key_term or not key_term.strip().isdigit():
+        return False
+    val = key_term.strip()
+    num_tokens = re.findall(r"\d+", phrase)
+    for token in num_tokens:
+        if token != val and val in token:
+            return True
+    return False
+
+
+def _contains_confidence(phrase: str, key_term: str) -> float:
+    """
+    Score a contains-match by how specific the key_term is relative to the phrase.
+    Longer key_terms matched inside a phrase are more reliable than very short ones.
+    Score ranges 0.45–0.75 (always below exact match's 1.0).
+    """
+    p_len = len(phrase.strip())
+    k_len = len(key_term.strip())
+    if p_len == 0:
+        return 0.6
+    ratio = min(k_len / p_len, 1.0)
+    # Base 0.45 + up to 0.3 bonus for ratio
+    return round(0.45 + ratio * 0.30, 2)
+
+
 from django.db import transaction
 
 from catalog.models import AttributeValue
@@ -94,6 +126,8 @@ def run_rules_mapping(
                 else:
                     for key_term, pair in lexicon.items():
                         if key_term != p_norm and key_term in p_norm:
+                            if _numeric_substring_false_match(p_norm, key_term):
+                                continue
                             match = pair
                             match_type = "contains"
                             matched_term = key_term
@@ -101,7 +135,10 @@ def run_rules_mapping(
                 if not match:
                     continue
                 attr, aval = match
-                conf = 1.0 if match_type == "exact" else 0.6
+                if match_type == "exact":
+                    conf = 1.0
+                else:
+                    conf = _contains_confidence(p_norm, matched_term or "")
                 if dry_run:
                     mapped += 1
                     continue

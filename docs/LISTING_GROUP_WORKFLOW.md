@@ -1,190 +1,98 @@
-# Listing Group Workflow - Current Status
+# Listing Group Workflow
 
-## ✅ What's Already Working
-
-### 1. Create Listing Group
-- **Location:** `/groups` → "New Listing Group" button
-- **What it does:**
-  - Select Product
-  - Select Channel/Marketplace
-  - Optional: Add a name
-  - Creates empty listing group
-- **Status:** ✅ **WORKING**
-
-### 2. Add Variants to Listing Group
-- **Location:** `/groups/{id}` → "Variants" tab → "Add Variants" button
-- **What it does:**
-  - Shows all variants from the same product
-  - Select which variants to add
-  - Moves variants to this listing group
-  - Removes them from any other listing on the same channel
-- **Status:** ✅ **WORKING**
-
-### 3. Detect Variation Axes
-- **Location:** `/groups/{id}` → "Variation Axes" tab
-- **What it does:**
-  - Automatically analyzes variants in the listing
-  - Shows which attributes differ between variants
-  - Suggests good candidates for variation axes (2-10 unique values, no missing data)
-  - Shows common attributes (same across all variants)
-- **Status:** ✅ **WORKING**
-
-### 4. Set Variation Axes
-- **Location:** `/groups/{id}` → "Variation Axes" tab
-- **What it does:**
-  - Check/uncheck attributes to use as axes
-  - Order matters (first axis = position 0)
-  - Saves axes to `ChannelListingAxis` table
-- **Status:** ✅ **WORKING**
-
-### 5. Generate Titles for Listing Group
-- **Location:** ❌ **NOT IMPLEMENTED**
-- **What it should do:**
-  - Generate titles for ALL variants in the listing
-  - Use the listing's specific axes (`ChannelListingAxis`)
-  - Generate titles based on marketplace + locale
-- **Status:** ❌ **MISSING**
+A listing group (`ChannelListing`) is a marketplace-specific bundle of variants with its own variation axes and generated titles. You can have multiple listing groups per product+channel (e.g. red-only vs blue-only on eBay).
 
 ---
 
-## Current Workflow (What You Can Do Now)
+## Full workflow
 
 ```
-1. Create Listing Group
-   └─> Select Product + Channel
-   
-2. Add Variants
-   └─> Go to listing detail page
-   └─> Click "Add Variants"
-   └─> Select variants to group
-   
-3. Detect & Set Axes
-   └─> Go to "Variation Axes" tab
-   └─> System shows detected differences
-   └─> Check attributes you want as axes
-   └─> Click "Save Axes"
-   
-4. Generate Titles ❌
-   └─> NOT YET AVAILABLE
-   └─> Need to use individual variant title generation
+1. Create listing group         POST /channel-listings/
+2. Add variants                 POST /channel-listings/{id}/move-variants/
+3. Set variation axes           POST /channel-listings/{id}/axes/
+4. Create title template        POST /channel-listings/{id}/create-default-template/
+5. Generate titles              POST /channel-listings/{id}/generate-titles/
+6. Review generated titles      GET  /channel-listings/{id}/generated-titles/
 ```
+
+All steps are ✅ implemented and working.
 
 ---
 
-## What Needs to Be Added
+## Step by step
 
-### 1. Update Title Renderer to Use Listing Axes
+### 1. Create listing group
+**UI:** `/groups` → "New Listing Group"
+**API:** `POST /api/v1/channel-listings/`
 
-**File:** `pub/services/title_renderer.py`
+Select: product, channel, optional name. Creates an empty listing group.
 
-**Current behavior:**
-- Uses `ProductVariantAxis` (global axes) only
+---
 
-**Needed:**
-- Check if variant belongs to a `ChannelListing`
-- Use `ChannelListingAxis` if available (highest priority)
-- Fall back to `ChannelVariantAxis` (product+channel)
-- Fall back to `ProductVariantAxis` (global)
+### 2. Add variants
+**UI:** `/groups/{id}` → Variants tab → "Add Variants"
+**API:** `POST /api/v1/channel-listings/{id}/move-variants/`
 
-**Priority resolution:**
-```
-1. ChannelListingAxis (listing-specific) ← Highest
-2. ChannelVariantAxis (product+channel) ← Middle
-3. ProductVariantAxis (global) ← Lowest
-```
+Picks variants from the same product. A variant can only belong to one listing per channel — adding it here removes it from any other listing on the same channel.
 
-### 2. Add API Endpoint for Listing Group Title Generation
+---
 
-**New endpoint:** `POST /api/v1/channel-listings/{id}/generate-titles/`
+### 3. Set variation axes
+**UI:** `/groups/{id}` → Variation Axes tab
+**API:** `GET/POST /api/v1/channel-listings/{id}/axes/`
 
-**Request:**
+The system shows which attributes differ between variants (auto-detected). Check/uncheck to enable/disable axes, drag to reorder. Axes are stored in `ChannelListingAxis` and take highest priority in title rendering (above channel-level and product-level axes).
+
+---
+
+### 4. Create title template
+**UI:** `/groups/{id}` → click "Create default template"
+**API:** `POST /api/v1/channel-listings/{id}/create-default-template/`
+
+Creates a `Template` scoped to this product type + channel + locale with the structure:
+`[Head term] - [Hook term]`
+
+You can extend it with attribute parts via the Template Wizard (`/templates/new`).
+
+---
+
+### 5. Generate titles
+**UI:** `/groups/{id}` → "Generate Titles" button, choose locale
+**API:** `POST /api/v1/channel-listings/{id}/generate-titles/`
+
 ```json
-{
-  "locale_code": "en",
-  "planner_run_id": 123,  // optional
-  "include_descriptions": false
-}
+{ "locale_code": "fr-FR", "template_id": 7 }
 ```
 
-**Response:**
-```json
-{
-  "status": "completed",
-  "listing_id": 1,
-  "variant_count": 5,
-  "outputs": [
-    {
-      "variant_id": 557,
-      "title": "Mountain Bike Pro - Red Medium",
-      "status": "generated"
-    },
-    ...
-  ]
-}
-```
-
-### 3. Add UI Button in GroupDetail Page
-
-**Location:** `frontend/src/pages/groups/GroupDetail.tsx`
-
-**Add:**
-- "Generate Titles" button in the listing detail page
-- Dialog to select locale
-- Show progress/results after generation
-- Display generated titles for each variant
+Generates one title per variant using the template. If no `template_id` is given, the latest active template for this product type + channel + locale is used. Titles are stored in `GenerationOutput`.
 
 ---
 
-## Example Workflow (Once Complete)
-
-```
-1. Create Listing Group
-   Product: "BIKE-001"
-   Channel: "eBay"
-   Name: "Red variants only"
-   
-2. Add Variants
-   - BIKE-001-RED-S
-   - BIKE-001-RED-M
-   - BIKE-001-RED-L
-   
-3. Detect Axes
-   System detects:
-   - color: Red (same, not an axis)
-   - size: S, M, L (different, good axis!)
-   
-4. Set Axes
-   ✅ size (position 0)
-   
-5. Generate Titles
-   Locale: "en"
-   Results:
-   - BIKE-001-RED-S → "Mountain Bike Pro - Small"
-   - BIKE-001-RED-M → "Mountain Bike Pro - Medium"
-   - BIKE-001-RED-L → "Mountain Bike Pro - Large"
-```
+### 6. Review generated titles
+**UI:** `/groups/{id}` → Generated Titles tab
+**API:** `GET /api/v1/channel-listings/{id}/generated-titles/`
+**Edit single:** `PATCH /api/v1/channel-listings/{id}/generated-titles/{variant_id}/`
 
 ---
 
-## Database Tables Used
+## Axis resolution priority (during title generation)
 
-1. **`pub_channellisting`** - The listing group
-2. **`pub_channellistingmap`** - Variant → Listing mapping
-3. **`catalog_channellistingaxis`** - Axes for this listing
-4. **`pub_generationoutput`** - Generated titles (when implemented)
+```
+1. ChannelListingAxis  (this listing)          ← highest
+2. ChannelVariantAxis  (product + channel)
+3. ProductVariantAxis  (product default)       ← lowest
+```
+
+Code entry point: `catalog.services.axis_resolution.get_axes_for_context()`
 
 ---
 
-## Summary
+## Database tables
 
-**✅ Working:**
-- Create listing groups
-- Add/remove variants
-- Detect variation axes
-- Set variation axes
-
-**❌ Missing:**
-- Generate titles for listing group (needs API endpoint + UI)
-- Title renderer using listing axes (needs code update)
-
-The foundation is solid! Just need to add title generation functionality that uses the listing's axes.
+| Table | Role |
+|-------|------|
+| `pub_channellisting` | The listing group |
+| `pub_channellistingmap` | Variant → listing mapping |
+| `catalog_channellistingaxis` | Axes per listing (position, label override) |
+| `pub_template` | Title template scoped to product type + channel + locale |
+| `pub_generationoutput` | Generated titles per variant |

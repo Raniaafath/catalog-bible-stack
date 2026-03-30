@@ -9,13 +9,10 @@ import {
   Sparkles,
   Download,
   ArrowRight,
-  Plus,
   Clock,
-  CheckCircle2,
-  AlertCircle,
-  Loader2,
   LayoutTemplate,
 } from 'lucide-react';
+import { Skeleton } from '@/components/ui/skeleton';
 import { PageHeader } from '@/components/PageHeader';
 import { StatCard } from '@/components/StatCard';
 import { StatusBadge } from '@/components/StatusBadge';
@@ -48,18 +45,10 @@ type ActivityItem = {
 export default function Dashboard() {
   const navigate = useNavigate();
 
-  const { data: productsData, isLoading: productsLoading, error: productsError } = useQuery({
+  const { data: productsData, isLoading: productsLoading } = useQuery({
     queryKey: ['products'],
     queryFn: () => getProducts({ page: 1, page_size: 1 }),
   });
-
-  // Debug logging
-  if (productsError) {
-    console.error('Products API Error:', productsError);
-  }
-  if (productsData) {
-    console.log('Products Data:', productsData);
-  }
 
   const { data: importsData, isLoading: importsLoading } = useQuery({
     queryKey: ['imports'],
@@ -110,7 +99,7 @@ export default function Dashboard() {
     ...(keywordsData?.results || []).map((k: PlannerRun) => ({
       id: `keyword-${k.id}`,
       type: 'keyword' as const,
-      title: `Keyword run (${k.product_type})`,
+      title: `Keyword run (${k.product_type_code ?? k.locale_code})`,
       status: k.status,
       time: k.created_at,
     })),
@@ -149,11 +138,9 @@ export default function Dashboard() {
     exportsLoading;
 
   const quickActions = [
-    { label: 'Add Product', href: '/products/new', icon: Package },
     { label: 'New Import', href: '/imports/new', icon: Upload },
-    { label: 'Title templates', href: '/templates', icon: LayoutTemplate },
+    { label: 'Title Templates', href: '/templates', icon: LayoutTemplate },
     { label: 'Keyword Run', href: '/keywords/new', icon: Search },
-    { label: 'Generate Content', href: '/content/new', icon: Sparkles },
     { label: 'New Export', href: '/exports/new', icon: Download },
   ];
 
@@ -165,49 +152,59 @@ export default function Dashboard() {
       />
 
       {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-4 mb-8 stagger-fade-in">
-        <StatCard
-          title="Products"
-          value={productsData?.count ?? 0}
-          icon={Package}
-          onClick={() => navigate('/products')}
-        />
-        <StatCard
-          title="Imports"
-          value={importsData?.count ?? 0}
-          icon={Upload}
-          onClick={() => navigate('/imports')}
-        />
-        <StatCard
-          title="Translations"
-          value={translationsData?.count ?? 0}
-          icon={Languages}
-          onClick={() => navigate('/translations')}
-        />
-        <StatCard
-          title="Keyword Runs"
-          value={keywordsData?.count ?? 0}
-          icon={Search}
-          onClick={() => navigate('/keywords')}
-        />
-        <StatCard
-          title="Generation Batches"
-          value={batchesData?.count ?? 0}
-          icon={Sparkles}
-          onClick={() => navigate('/content')}
-        />
-        <StatCard
-          title="Exports"
-          value={exportsData?.count ?? 0}
-          icon={Download}
-          onClick={() => navigate('/exports')}
-        />
-        <StatCard
-          title="Title templates"
-          value={templatesData?.count ?? 0}
-          icon={LayoutTemplate}
-          onClick={() => navigate('/templates')}
-        />
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8 stagger-fade-in">
+        {productsLoading ? (
+          Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="stat-card">
+              <div className="flex items-start justify-between">
+                <div className="space-y-2 flex-1">
+                  <Skeleton className="h-3 w-20" />
+                  <Skeleton className="h-7 w-12" />
+                </div>
+                <Skeleton className="h-10 w-10 rounded-lg" />
+              </div>
+            </div>
+          ))
+        ) : (
+          <>
+            <StatCard
+              title="Products"
+              value={productsData?.count ?? 0}
+              icon={Package}
+              onClick={() => navigate('/products')}
+            />
+            <StatCard
+              title="Imports"
+              value={importsData?.count ?? 0}
+              icon={Upload}
+              onClick={() => navigate('/imports')}
+            />
+            <StatCard
+              title="Translations"
+              value={translationsData?.count ?? 0}
+              icon={Languages}
+              onClick={() => navigate('/translations')}
+            />
+            <StatCard
+              title="Keyword Runs"
+              value={keywordsData?.count ?? 0}
+              icon={Search}
+              onClick={() => navigate('/keywords')}
+            />
+            <StatCard
+              title="Exports"
+              value={exportsData?.count ?? 0}
+              icon={Download}
+              onClick={() => navigate('/exports')}
+            />
+            <StatCard
+              title="Title Templates"
+              value={templatesData?.count ?? 0}
+              icon={LayoutTemplate}
+              onClick={() => navigate('/templates')}
+            />
+          </>
+        )}
       </div>
 
       {/* Quick Actions */}
@@ -243,8 +240,19 @@ export default function Dashboard() {
         </CardHeader>
         <CardContent>
           {isLoading ? (
-            <div className="flex items-center justify-center py-8">
-              <Loader2 className="w-6 h-6 animate-spin text-primary" />
+            <div className="space-y-2">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <div key={i} className="flex items-center justify-between py-3 px-4 rounded-lg">
+                  <div className="flex items-center gap-3">
+                    <Skeleton className="h-9 w-9 rounded-lg" />
+                    <div className="space-y-1.5">
+                      <Skeleton className="h-3.5 w-40" />
+                      <Skeleton className="h-3 w-24" />
+                    </div>
+                  </div>
+                  <Skeleton className="h-6 w-20 rounded-full" />
+                </div>
+              ))}
             </div>
           ) : recentActivity.length === 0 ? (
             <div className="text-center py-8 text-muted-foreground">

@@ -1,34 +1,34 @@
 import { useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 
-const APP_TITLE = 'Catalog Pipeline';
+const APP_TITLE = 'Traxe';
 
 /** Route path patterns to page title (order matters: more specific first) */
 const ROUTE_TITLES: { pattern: RegExp | string; title: string }[] = [
   { pattern: '/', title: 'Dashboard' },
-  { pattern: '/products/new', title: 'New product' },
-  { pattern: /^\/products\/\d+$/, title: 'Product' },
-  { pattern: '/products', title: 'Products' },
-  { pattern: '/variants', title: 'Variants' },
-  { pattern: /^\/groups\/\d+$/, title: 'Listing' },
-  { pattern: '/groups', title: 'Listings' },
+  { pattern: '/products/new', title: 'New parent' },
+  { pattern: /^\/products\/\d+$/, title: 'Parent' },
+  { pattern: '/products', title: 'Parents' },
+  { pattern: '/variants', title: 'Products' },
+  { pattern: /^\/groups\/\d+$/, title: 'Marketplace listing' },
+  { pattern: '/groups', title: 'Marketplace listings' },
   { pattern: '/imports/new', title: 'New import' },
   { pattern: /^\/imports\/[^/]+\/map-attributes$/, title: 'Map attributes' },
   { pattern: /^\/imports\/[^/]+\/assign-category$/, title: 'Assign category' },
   { pattern: /^\/imports\/\d+$/, title: 'Import' },
-  { pattern: '/imports', title: 'Imports' },
+  { pattern: '/imports', title: 'Raw Data – Import' },
   { pattern: '/translations/new', title: 'New translation' },
   { pattern: /^\/translations\/\d+$/, title: 'Translation' },
-  { pattern: '/translations', title: 'Translations' },
-  { pattern: '/keywords/saved-terms', title: 'Saved terms' },
+  { pattern: '/translations', title: 'Raw Data – Translation' },
+  { pattern: '/keywords/saved-terms', title: 'Raw Data – Saved terms' },
   { pattern: '/keywords/new', title: 'Keyword run' },
   { pattern: /^\/keywords\/\d+\/mappings$/, title: 'Keyword mappings' },
   { pattern: /^\/keywords\/\d+$/, title: 'Keyword' },
-  { pattern: '/keywords', title: 'Keywords' },
+  { pattern: '/keywords', title: 'Raw Data – Google Ads keywords' },
   { pattern: '/content/new', title: 'Generate content' },
-  { pattern: '/content/generate-titles', title: 'Generate titles' },
-  { pattern: '/content/generated-titles', title: 'Generated titles' },
-  { pattern: '/content', title: 'Content' },
+  { pattern: '/content/generate-titles', title: 'Listings – Generate titles' },
+  { pattern: '/content/generated-titles', title: 'Listings – Generated titles' },
+  { pattern: '/content', title: 'Listings – Content' },
   { pattern: '/exports/new', title: 'New export' },
   { pattern: '/exports', title: 'Exports' },
   { pattern: '/attributes/new', title: 'New attribute' },
@@ -36,7 +36,7 @@ const ROUTE_TITLES: { pattern: RegExp | string; title: string }[] = [
   { pattern: '/attributes', title: 'Attributes' },
   { pattern: '/templates/new', title: 'Create title template' },
   { pattern: /^\/templates\/\d+\/edit$/, title: 'Edit title template' },
-  { pattern: '/templates', title: 'Title templates' },
+  { pattern: '/templates', title: 'Listings – Title templates' },
   { pattern: '/settings', title: 'Settings' },
   { pattern: '/auth', title: 'Sign in' },
 ];
@@ -49,11 +49,11 @@ function matchTitle(pathname: string): string {
       if (pattern.test(pathname)) return title;
     }
   }
-  return 'Pipeline';
+  return 'Traxe';
 }
 
 /**
- * Sets document.title from the current route using a title template: "{Page} | Catalog Pipeline".
+ * Sets document.title from the current route using a title template: "{Page} | Traxe".
  * Renders nothing; use inside BrowserRouter (e.g. in App).
  */
 export function useDocumentTitle(): void {

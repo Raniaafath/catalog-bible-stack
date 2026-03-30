@@ -5,7 +5,7 @@ from django.core.management import call_command
 from django.utils.html import format_html
 
 from .models import (
-    AttributeMapping,
+    ImportColumnMapping,
     CategoryBatch,
     ImportColumnMap,
     ImportColumnRule,
@@ -212,8 +212,8 @@ class CategoryBatchAdmin(admin.ModelAdmin):
             )
 
 
-@admin.register(AttributeMapping)
-class AttributeMappingAdmin(admin.ModelAdmin):
+@admin.register(ImportColumnMapping)
+class ImportColumnMappingAdmin(admin.ModelAdmin):
     list_display = ("category_batch", "source_attr_name", "strategy", "target_attribute", "confidence")
     list_filter = ("strategy", "category_batch")
     search_fields = ("source_attr_name", "target_attribute__code", "category_batch__category")

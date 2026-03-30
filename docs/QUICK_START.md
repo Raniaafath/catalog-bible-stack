@@ -126,7 +126,7 @@ for variant in product.variants.all():
 - `catalog/management/commands/test_parent_variant_import.py` - Test command
 
 ### Documentation
-- `docs/IMPLEMENTATION_SUMMARY.md` - Overview and architecture
+- `docs/LISTING_GROUP_WORKFLOW.md` - Title generation after import
 - `docs/PARENT_VARIANT_IMPORT.md` - Complete user guide
 - `docs/PARENT_VARIANT_EXAMPLE.py` - Working code examples
 - `docs/QUICK_START.md` - This file

@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Plus, Edit, Trash2, Loader2 } from 'lucide-react';
+import { Plus, Edit, Trash2, Loader2, AlertCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { DataTable, Column } from '@/components/DataTable';
@@ -30,6 +30,39 @@ import {
   ChannelLocalePolicy,
   ChannelLocalePolicyCreate,
 } from '@/lib/api';
+
+const FIELD_LABELS: Record<string, string> = {
+  policy_set: 'Policy Set',
+  policy_set_id: 'Policy Set',
+  locale: 'Locale',
+  locale_id: 'Locale',
+  title_max_len: 'Title Max Length',
+  meta_title_max_len: 'Meta Title Max Length',
+  meta_description_max_len: 'Meta Description Max Length',
+  description_max_len: 'Description Max Length',
+  bullet_count: 'Bullet Count',
+  bullet_max_len: 'Bullet Max Length',
+  title_separator: 'Title Separator',
+  brand_position: 'Brand Position',
+  title_mode: 'Title Mode',
+  banned_terms: 'Banned Terms',
+  non_field_errors: '',
+};
+
+function formatApiErrors(error: any): string[] {
+  const data = error?.response?.data;
+  if (!data) return [error?.message || 'Something went wrong.'];
+  if (typeof data === 'string') return [data];
+  if (typeof data.detail === 'string') return [data.detail];
+  if (typeof data === 'object') {
+    return Object.entries(data).flatMap(([field, msgs]) => {
+      const label = FIELD_LABELS[field] || field.replace(/_/g, ' ');
+      const messages = Array.isArray(msgs) ? msgs : [String(msgs)];
+      return messages.map((m) => `${label}: ${m}`);
+    });
+  }
+  return ['Something went wrong.'];
+}
 
 export default function TitleRulesTab() {
   const { toast } = useToast();
@@ -123,12 +156,8 @@ export default function TitleRulesTab() {
       setDialogOpen(false);
       resetForm();
     },
-    onError: (error: any) => {
-      toast({
-        title: `Failed to ${editingPolicy ? 'update' : 'create'} title rule`,
-        description: error?.response?.data?.detail || error?.message || 'Something went wrong.',
-        variant: 'destructive',
-      });
+    onError: () => {
+      // errors are shown inline in the form
     },
   });
 
@@ -146,7 +175,7 @@ export default function TitleRulesTab() {
     onError: (error: any) => {
       toast({
         title: 'Failed to delete title rule',
-        description: error?.response?.data?.detail || error?.message || 'Something went wrong.',
+        description: formatApiErrors(error).join(' · '),
         variant: 'destructive',
       });
     },
@@ -322,6 +351,18 @@ export default function TitleRulesTab() {
           </DialogHeader>
           <form onSubmit={handleSubmit}>
             <div className="space-y-4 py-4">
+              {/* Inline API errors */}
+              {saveMutation.isError && (
+                <div className="flex gap-2.5 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-3">
+                  <AlertCircle className="h-4 w-4 text-destructive flex-shrink-0 mt-0.5" />
+                  <div className="space-y-0.5">
+                    {formatApiErrors(saveMutation.error).map((msg, i) => (
+                      <p key={i} className="text-sm text-destructive">{msg}</p>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="channel_select">Channel</Label>

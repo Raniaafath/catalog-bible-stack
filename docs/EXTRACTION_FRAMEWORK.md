@@ -1,109 +1,94 @@
-# Global extraction framework (scalable design)
+# Keyword Extraction & Mapping Framework
 
-**Goal:** One universal pipeline for keyword/text extraction and attribute mapping—all languages, all product types—no product-specific hacks. Config-first so new categories or languages don’t require code rewrites.
-
----
-
-## 1. Universal pipeline
-
-1. **Normalize text** — lowercase, unicode NFKC, punctuation, tokenization
-2. **Language detect** — or use marketplace locale
-3. **Intent classification** — which product type(s)?
-4. **Entity extraction** — dimensions, colors, materials, shape, installation, etc.
-5. **Attribute mapping** — only from allowed schema for detected product type
-6. **Scoring + conflict resolution**
-7. **Output buckets** — auto-apply / review / reject
+How keywords are extracted from search data, mapped to product attributes, and turned into head/hook terms for title generation.
 
 ---
 
-## 2. Core abstraction layers
+## Pipeline overview
 
-### Global ontology
-
-- **Product types (PT):** e.g. `shower_tray`, `shower_enclosure`, `bathtub`
-- **Canonical attributes per PT:** e.g. `length_cm`, `width_cm`, `material`, `shape`, `installation`
-- **Value domains per attribute:** enum + free-text rules
-
-### Locale packs (DE / FR / EN / ES / IT / …)
-
-- Synonyms per PT and attribute values
-- Stopwords / connectors
-- Unit variants (`cm`, `mm`, `po`, `inch`)
-- Morphology / abbreviations
-
-### Rule engine
-
-- Reusable regex extractors (dimensions, units, quantities)
-- Per-attribute matching policies
-- Confidence thresholds
-
-### ML layer (optional)
-
-- Intent model (multi-label)
-- NER for hard cases
-- Fallback when lexicon/rules are insufficient
+```
+1. Import keywords          CSV upload or Google Ads API
+2. Parse keywords           Split into phrases, normalize
+3. Rules-based mapping      Text/enum overlap → AttributeMap (fast, free)
+4. AI mapping               LLM per-product → ProductKeywordMap (pav_text_llm)
+5. Extract terms            Classify mapped keywords as head or hook
+6. Review & approve         User saves head/hook terms per product/locale
+7. Title generation         Terms feed into title template rendering
+```
 
 ---
 
-## 3. Data model to keep / add
+## Stage 1-2: Import and parse
 
-| Model / concept        | Role |
-|------------------------|------|
-| `product_types`       | Already in catalog |
-| `attributes`           | Already in catalog |
-| `attribute_values`     | Already in catalog |
-| `locale_lexicon`       | term → canonical concept |
-| `regex_patterns`       | reusable extractors |
-| `mapping_rules`        | per-attribute policies |
-| `scoring_policies`     | global thresholds |
-| `keyword_processing_log` | audit trail |
-| `human_review_queue`   | medium-confidence items |
+Keywords are imported via `POST /keywords/planner-run/import-csv/` or seeded from Google Ads (`PlannerSeed`). Each keyword is parsed into normalized phrases by `kw/services/csv_import.py` and stored in `KeywordParse`.
 
 ---
 
-## 4. Confidence policy (global)
+## Stage 3: Rules-based mapping
 
-- **High (≥ 0.90):** auto-map
-- **Medium (0.70–0.89):** review queue
-- **Low (&lt; 0.70):** keep keyword only, no mapping
-- **Hard fail** if: intent mismatch, cross-category contamination, impossible dimension patterns
+`POST /keywords/planner-run/{id}/map/` → `kw/services/mapping_service.py`
 
----
-
-## 5. Prevent “stupid mapping” globally
-
-- Attribute allowlist by product type
-- Banned token mapping (`oder`, `zum`, `avec`, `for`, etc.)
-- Multi-entity guardrails (comparison keywords don’t auto-map)
-- Dimension parser: validate both sides and unit consistency
-- Conflict detector: e.g. `material=acrylic` + `material=steel` ⇒ multi-value intent or review
+Matches keywords to attribute values by text overlap (phrase match). Fast and free but limited — can miss context-dependent mappings and can produce false positives on bare numbers. Stored as `AttributeMap` rows with source `enum_map`.
 
 ---
 
-## 6. Rollout plan
+## Stage 4: AI mapping
 
-1. Build canonical ontology for top 20 product types
-2. Add locale packs for DE / FR / EN first
-3. Implement universal regex + scoring
-4. Start with “auto-map only high confidence”
-5. Measure precision/recall by category/language
-6. Expand to ES / IT / NL / PL + more categories
+`POST /keywords/planner-run/{id}/persist-mappings/` with `use_llm=true` → `kw/services/product_keyword_mapper.py`
 
----
+Sends unmatched keywords to an LLM with full product context (all attribute values). AI decides per-product which keywords are relevant and which attribute they correspond to. Stored as `ProductKeywordMap` rows with source `pav_text_llm`.
 
-## 7. Config location (this repo)
+**AI overwrites rules:** when AI maps a keyword, any existing `enum_map` row for the same `(product, keyword, run)` is deleted. Rules rows for keywords the AI skipped are kept as fallback.
 
-- **Ontology:** `kw/config/ontology/` (product types, canonical attributes, value domains)
-- **Locale packs:** `kw/config/locales/` (per-language synonyms, stopwords, units)
-- **Rules:** `kw/config/rules/` (regex patterns, mapping rules)
-- **Scoring:** `kw/config/scoring/` (thresholds, policies)
-- **Review workflow:** config + `human_review_queue` model
+**Language-agnostic filters** — attributes are excluded from mapping if their code matches:
+- Size/dimension prefixes: `longueur`, `largeur`, `breite`, `ancho`, `length`, `width`, …
+- Size suffixes: `_cm`, `_mm`, `_inch`, …
+- Operational prefixes: `warranty`, `garantie`, `stock`, `price`, `weight`, …
+- Operational suffixes: `_qty`, `_kg`, `_jahre`, `_years`, …
 
-See `kw/config/README.md` and the YAML schemas in each subfolder when added.
+**Numeric matching rule:** bare numbers (e.g. `"30"`) are only matched when the attribute has no unit. If the attribute value includes a unit (`profondeur = 30 cm`), the keyword must contain the number with the unit (`"30 cm"` or `"30cm"`).
 
 ---
 
-## See also
+## Stage 5: Extract head and hook terms
 
-- [ATTRIBUTE_ONE_DIMENSION.md](ATTRIBUTE_ONE_DIMENSION.md) — one attribute = one semantic dimension
-- [GROUPING_AND_MARKETPLACE_AXES.md](GROUPING_AND_MARKETPLACE_AXES.md) — product family vs listing group, axes
+`GET /keywords/planner-run/{id}/suggested-terms/` → `kw/services/term_extraction.py`
+
+**Head terms** — general product-type category words (e.g. `"Duschwanne"`, `"table basse"`). Sourced from `product_label`, `product_category`, `product_i18n_title` match kinds. One set per run/product-type.
+
+**Hook terms** — product differentiators (colour, material, shape, finish). Sourced from `pav_text_llm`, `pav_text`, `attr_value_label` match kinds. One set per product.
+
+Both can be enriched with AI explanations:
+- `?use_ai_reason=1` — why each term is a good head/hook term
+- `?use_ai_meaning=1` — plain-English meaning of each head term
+
+---
+
+## Stage 6: Approve and save
+
+- **Head terms:** `POST /api/v1/product-types/{id}/head-terms/` → `ProductTypeSynonym`
+- **Hook terms:** `POST /api/v1/products/{id}/hook-terms/` → `ProductHookTerm`
+
+Both are scoped to locale and optionally channel. Approved terms are used by the title renderer.
+
+---
+
+## Stage 7: Title generation
+
+The title renderer (`pub/services/title_renderer.py`) resolves `HEAD_TERM` and `HOOK_TERM` template parts from saved `ProductTypeSynonym` and `ProductHookTerm` rows for the requested locale + channel.
+
+---
+
+## Code locations
+
+| Concern | File |
+|---------|------|
+| CSV import | `kw/services/csv_import.py` |
+| Rules mapping | `kw/services/mapping_service.py` |
+| AI mapping + persist | `kw/services/product_keyword_mapper.py` |
+| Size/non-hook detection | `kw/services/product_keyword_mapper.py` → `_is_size_attribute()`, `_is_non_hook_attribute()` |
+| Term extraction | `kw/services/term_extraction.py` |
+| AI term reasons/meanings | `kw/services/term_extraction.py` → `generate_term_reasons()`, `generate_head_term_meanings_en()` |
+| API views | `api/v1/views/keywords.py` |
+
+See also: [KEYWORD_MAPPING_GUIDE.md](KEYWORD_MAPPING_GUIDE.md) for a more detailed walkthrough.

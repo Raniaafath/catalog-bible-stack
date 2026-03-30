@@ -423,13 +423,9 @@ export default function TemplateForm() {
                     </SelectTrigger>
                     <SelectContent>
                       {attributes.map((a) => {
-                        const isAxis = axisAttributeIds.has(a.id);
-                        const isAttrAny = part.part_type === 'attribute_value';
-                        const disabled = isAttrAny && isAxis;
-                        const label = isAxis && isAttrAny ? `${a.code} (axis)` : a.code;
                         return (
-                          <SelectItem key={a.id} value={String(a.id)} disabled={disabled}>
-                            {label}
+                          <SelectItem key={a.id} value={String(a.id)}>
+                            {a.code}
                           </SelectItem>
                         );
                       })}

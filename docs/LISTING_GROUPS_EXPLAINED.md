@@ -141,24 +141,18 @@ This means:
 
 ## How Title Generation Works
 
-### Axis Resolution Priority (Planned)
+### Axis Resolution Priority
 
-When generating a title for a variant on a marketplace, the system **should** resolve axes in this order:
+When generating a title for a variant on a marketplace, the system resolves axes in this order (implemented in `catalog.services.axis_resolution.get_axes_for_context`):
 
-1. **`ChannelListingAxis`** (listing-specific) ← **Highest Priority** ⚠️ *Not yet implemented*
-   - If variant belongs to a listing group, use that listing's axes
-   
-2. **`ChannelVariantAxis`** (product+channel) ← Fallback ⚠️ *Not yet implemented*
-   - If no listing-specific axes, use product+channel axes
-   
-3. **`ProductVariantAxis`** (global/default) ← **Currently Used**
-   - Currently, title generation uses global product axes only
+1. **`ChannelListingAxis`** (listing-specific) ← **Highest Priority**
+   - If variant belongs to a listing group that has axes defined, those axes are used.
 
-**Note:** The title renderer (`pub/services/title_renderer.py`) currently only uses `ProductVariantAxis`. To fully support listing groups, it needs to be updated to:
-1. Check if variant belongs to a `ChannelListing` 
-2. Use `ChannelListingAxis` if available
-3. Fall back to `ChannelVariantAxis` if no listing axes
-4. Fall back to `ProductVariantAxis` as last resort
+2. **`ChannelVariantAxis`** (product+channel) ← Fallback
+   - If no listing-specific axes, use product+channel axes.
+
+3. **`ProductVariantAxis`** (global/default) ← Last resort
+   - Falls back to the product's default variation axes.
 
 ### Title Generation Flow
 
@@ -241,9 +235,9 @@ POST /api/v1/channel-listings/
 }
 ```
 
-### Add Variants to Listing
+### Move Variants into Listing
 ```
-POST /api/v1/channel-listings/{id}/add-variants/
+POST /api/v1/channel-listings/{id}/move-variants/
 {
   "variant_ids": [557, 558]
 }
@@ -262,12 +256,16 @@ POST /api/v1/channel-listings/{id}/axes/
 
 ### Generate Titles for Listing
 ```
-POST /api/v1/translations/generate/
+POST /api/v1/channel-listings/{id}/generate-titles/
 {
-  "listing_id": 1,
-  "locale_id": 1,
-  "channel_id": 1
+  "locale_code": "de-DE",
+  "template_id": 7
 }
+```
+
+### View Generated Titles
+```
+GET /api/v1/channel-listings/{id}/generated-titles/
 ```
 
 ---

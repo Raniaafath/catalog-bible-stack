@@ -1,11 +1,12 @@
 import { ReactNode, useState } from 'react';
 import { cn } from '@/lib/utils';
-import { ChevronUp, ChevronDown, ChevronsUpDown, Inbox, AlertCircle, Loader2 } from 'lucide-react';
+import { ChevronUp, ChevronDown, ChevronsUpDown, Inbox, AlertCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { Skeleton } from '@/components/ui/skeleton';
 
 export interface Column<T> {
   key: string;
-  header: string;
+  header: string | ReactNode;
   render?: (item: T, index: number) => ReactNode;
   sortable?: boolean;
   className?: string;
@@ -79,9 +80,34 @@ export function DataTable<T>({
 
   if (isLoading) {
     return (
-      <div className="flex flex-col items-center justify-center py-16">
-        <Loader2 className="h-8 w-8 animate-spin text-primary mb-4" />
-        <p className="text-sm text-muted-foreground">Loading data...</p>
+      <div className="overflow-x-auto rounded-lg border border-border">
+        <table className="data-table">
+          <thead>
+            <tr>
+              {columns.map((column) => (
+                <th key={column.key} className={column.headerClassName}>
+                  <Skeleton className="h-4 w-20" />
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {Array.from({ length: 5 }).map((_, rowIdx) => (
+              <tr key={rowIdx}>
+                {columns.map((column, colIdx) => (
+                  <td key={column.key}>
+                    <Skeleton
+                      className={cn(
+                        'h-4',
+                        colIdx === 0 ? 'w-40' : colIdx === columns.length - 1 ? 'w-16' : 'w-24'
+                      )}
+                    />
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     );
   }

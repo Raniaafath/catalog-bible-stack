@@ -1,14 +1,19 @@
+import threading
+import time
 import traceback
+from typing import Dict, Any
 
 from django.conf import settings
-from django.core.management import call_command
-from django.db.models import Count, Max
+from django.db.models import Count, Max, IntegerField, Sum, Subquery, OuterRef
+from django.db.models.functions import Coalesce
+from django.db.models import Value
 from rest_framework import status, viewsets
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-import json
-import time
+# In-memory job tracker for background AI mapping tasks.
+# Keyed by run_id (int). Values: {"status": "running|done|error", "result": {}, "error": str, "started_at": float}
+_mapping_jobs: Dict[int, Dict[str, Any]] = {}
 
 from api.v1.serializers import (
     KeywordSerializer,
@@ -38,42 +43,19 @@ from kw.models import (
     ProductKeywordMap,
     Source,
 )
-from catalog.models import Product, Variant
+from catalog.models import Product, ProductTypeAttribute, Variant
 from kw.services.csv_import import import_keywords_csv
 from kw.services.mapping_service import run_rules_mapping
 from kw.services.product_keyword_mapper import persist_product_keyword_maps
 from kw.services.seed_builder import _normalize
+from pub.services.ai_constants import DEFAULT_MAPPING_AI_MODEL, MAPPING_AI_MODELS
 from kw.services.term_extraction import (
     extract_suggested_head_terms,
     extract_suggested_hook_terms,
     generate_head_term_meanings_en,
+    generate_term_reasons,
 )
 from pub.models import Channel
-
-
-def _agent_debug_log(hypothesis_id: str, location: str, message: str, data: dict) -> None:
-    """
-    Append a single NDJSON debug log line for debug mode.
-    """
-    payload = {
-        "sessionId": "debug-session",
-        "runId": "pre-fix",
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": int(time.time() * 1000),
-    }
-    try:
-        from core.debug_utils import DEBUG_LOG_PATH
-        import os
-
-        os.makedirs(DEBUG_LOG_PATH.parent, exist_ok=True)
-        with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except Exception:
-        # Logging must never break the request
-        pass
 
 
 class PlannerRunViewSet(viewsets.ReadOnlyModelViewSet):
@@ -171,19 +153,6 @@ class KeywordPlannerRunImportCsvView(APIView):
                 {"detail": "Missing file. Use form field 'file' for the CSV upload."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        # region agent log
-        _agent_debug_log(
-            hypothesis_id="H1_H3",
-            location="api.v1.views.keywords.KeywordPlannerRunImportCsvView.post:before_params",
-            message="Import CSV request received",
-            data={
-                "has_file": bool(csv_file),
-                "file_name": getattr(csv_file, "name", None),
-                "content_type": getattr(csv_file, "content_type", None),
-                "data_keys": list(request.data.keys()),
-            },
-        )
-        # endregion agent log
         params = {
             "locale_code": request.data.get("locale_code", "").strip(),
             "channel_code": request.data.get("channel_code", "").strip(),
@@ -212,21 +181,6 @@ class KeywordPlannerRunImportCsvView(APIView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        # region agent log
-        _agent_debug_log(
-            hypothesis_id="H1_H2",
-            location="api.v1.views.keywords.KeywordPlannerRunImportCsvView.post:before_import",
-            message="Validated CSV import params",
-            data={
-                "locale_code": data.get("locale_code"),
-                "channel_code": data.get("channel_code"),
-                "has_run_id": bool(data.get("run_id")),
-                "has_product_type_id": bool(data.get("product_type_id")),
-                "delimiter": data.get("delimiter"),
-            },
-        )
-        # endregion agent log
-
         try:
             result = import_keywords_csv(
                 file=csv_file,
@@ -243,16 +197,6 @@ class KeywordPlannerRunImportCsvView(APIView):
         except ValueError as e:
             return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
-            # region agent log
-            _agent_debug_log(
-                hypothesis_id="H2_H3",
-                location="api.v1.views.keywords.KeywordPlannerRunImportCsvView.post:exception",
-                message="Unexpected error during CSV import",
-                data={"error_type": type(e).__name__, "error_str": str(e)},
-            )
-            # endregion agent log
-            import traceback
-
             return Response(
                 {
                     "detail": str(e),
@@ -261,15 +205,6 @@ class KeywordPlannerRunImportCsvView(APIView):
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
-
-        # region agent log
-        _agent_debug_log(
-            hypothesis_id="H1",
-            location="api.v1.views.keywords.KeywordPlannerRunImportCsvView.post:success",
-            message="CSV import completed",
-            data={"run_id": result.get("run_id"), "keywords_created": result.get("keywords_created")},
-        )
-        # endregion agent log
 
         return Response(result, status=status.HTTP_201_CREATED)
 
@@ -361,19 +296,41 @@ class KeywordPlannerRunMapView(APIView):
 
 
 class KeywordPlannerRunMappingsView(APIView):
-    """GET: list attribute mappings for this run (paginated)."""
+    """GET: list attribute mappings for this run (paginated, filterable, sortable)."""
+
+    _SORT_FIELDS = {
+        "keyword": "keyword__term",
+        "attribute": "attribute__code",
+        "value": "attribute_value__code",
+        "confidence": "confidence",
+        "status": "status",
+    }
 
     def get(self, request, run_id: int):
         page = int(request.query_params.get("page", 1))
         page_size = min(int(request.query_params.get("page_size", 50)), 100)
+        status_filter = request.query_params.get("status", "").strip().lower()
+        sort_by = request.query_params.get("sort_by", "keyword").strip().lower()
+        sort_dir = request.query_params.get("sort_dir", "asc").strip().lower()
+
         offset = (page - 1) * page_size
         qs = (
             AttributeMap.objects.filter(origin_run_keyword__run_id=run_id)
             .select_related("keyword", "attribute", "attribute_value")
-            .order_by("keyword__term", "attribute__code")
         )
+
+        # Server-side status filter
+        if status_filter in ("suggested", "approved", "rejected"):
+            qs = qs.filter(status=status_filter)
+
+        # Sorting
+        order_field = self._SORT_FIELDS.get(sort_by, "keyword__term")
+        if sort_dir == "desc":
+            order_field = f"-{order_field}"
+        qs = qs.order_by(order_field, "keyword__term", "attribute__code")
+
         total = qs.count()
-        items = qs[offset : offset + page_size]
+        items = qs[offset: offset + page_size]
         serializer = RunAttributeMapSerializer(items, many=True)
         return Response(
             {
@@ -399,57 +356,90 @@ class KeywordPlannerRunMappingDetailView(APIView):
         return Response({"status": data["status"]}, status=status.HTTP_200_OK)
 
 
-class KeywordPlannerRunPersistMappingsView(APIView):
+class KeywordPlannerRunMappingsBulkUpdateView(APIView):
+    """POST: bulk approve or reject all (or filtered) attribute mappings for a run."""
+
+    def post(self, request, run_id: int):
+        action = (request.data.get("action") or "").strip().lower()
+        if action not in ("approve", "reject"):
+            return Response(
+                {"detail": "action must be 'approve' or 'reject'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        new_status = AttributeMap.Status.APPROVED if action == "approve" else AttributeMap.Status.REJECTED
+
+        # Optional filters
+        current_status = (request.data.get("status") or "").strip().lower()
+        attribute_code = (request.data.get("attribute_code") or "").strip()
+        ids = request.data.get("ids")  # optional list of specific IDs
+
+        qs = AttributeMap.objects.filter(origin_run_keyword__run_id=run_id)
+        if ids and isinstance(ids, list):
+            qs = qs.filter(id__in=ids)
+        else:
+            if current_status in ("suggested", "approved", "rejected"):
+                qs = qs.filter(status=current_status)
+            if attribute_code:
+                qs = qs.filter(attribute__code=attribute_code)
+
+        updated = qs.update(status=new_status)
+        return Response({"updated": updated, "action": action}, status=status.HTTP_200_OK)
+
+
+class KeywordPlannerRunMappingsClearAllView(APIView):
     """
-    POST: persist per-product keyword mappings (with optional LLM).
-    GET: describe the endpoint (for DRF browsable API / discovery).
+    GET  /keywords/planner-run/{run_id}/mappings/clear-all/
+        Returns count of attribute mappings that would be deleted (preview).
+    DELETE /keywords/planner-run/{run_id}/mappings/clear-all/
+        Body: {"confirm": true}
+        Deletes all AttributeMap rows for this run.
     """
 
     def get(self, request, run_id: int):
+        if not PlannerRun.objects.filter(id=run_id).exists():
+            return Response({"detail": "Run not found."}, status=status.HTTP_404_NOT_FOUND)
+        count = AttributeMap.objects.filter(origin_run_keyword__run_id=run_id).count()
+        return Response({"run_id": run_id, "count": count}, status=status.HTTP_200_OK)
+
+    def delete(self, request, run_id: int):
+        if not PlannerRun.objects.filter(id=run_id).exists():
+            return Response({"detail": "Run not found."}, status=status.HTTP_404_NOT_FOUND)
+        confirm = request.data.get("confirm")
+        if confirm is not True:
+            return Response(
+                {"detail": "Send {\"confirm\": true} to proceed."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        deleted, _ = AttributeMap.objects.filter(origin_run_keyword__run_id=run_id).delete()
+        return Response({"run_id": run_id, "deleted": deleted}, status=status.HTTP_200_OK)
+
+
+class KeywordPlannerRunPersistMappingsView(APIView):
+    """
+    POST: persist per-product keyword mappings (with optional LLM).
+    Pass async_job=true to run in the background and poll via GET for status.
+    GET: return current background job status for this run_id.
+    """
+
+    def get(self, request, run_id: int):
+        job = _mapping_jobs.get(run_id)
+        if not job:
+            return Response(
+                {"run_id": run_id, "job_status": "idle"},
+                status=status.HTTP_200_OK,
+            )
         return Response(
             {
                 "run_id": run_id,
-                "action": "persist_product_keyword_maps",
-                "method": "POST",
-                "description": "Persist per-product keyword mappings for this planner run. "
-                "Optional body: product_id, limit, min_confidence, include_text_values, include_i18n, "
-                "include_descriptions, max_description_chars, max_text_matches, max_enum_maps, "
-                "use_llm, llm_max_keywords, dry_run.",
+                "job_status": job["status"],
+                "result": job.get("result"),
+                "error": job.get("error"),
+                "started_at": job.get("started_at"),
             },
             status=status.HTTP_200_OK,
         )
 
     def post(self, request, run_id: int):
-        # #region agent log
-        def _agent_log(loc, msg, data, hid):
-            import os
-            import sys
-            _payload = __import__("json").dumps({"location": loc, "message": msg, "data": data, "hypothesisId": hid, "timestamp": __import__("time").time() * 1000})
-            try:
-                sys.stdout.write("[AGENT_DEBUG] " + _payload + "\n")
-                sys.stdout.flush()
-            except Exception:
-                pass
-            _base = getattr(settings, "BASE_DIR", None)
-            _root = str(_base) if _base is not None else os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            _p = os.path.join(_root, ".cursor", "debug.log")
-            try:
-                os.makedirs(os.path.dirname(_p), exist_ok=True)
-                with open(_p, "a") as _f:
-                    _f.write(_payload + "\n")
-            except Exception:
-                pass
-        try:
-            _agent_log("keywords.py:post:first_line", "view entered", {"run_id": run_id}, "H2")
-        except Exception:
-            pass
-        try:
-            _data = getattr(request, "data", None)
-            _keys = list(_data.keys()) if isinstance(_data, dict) else ("no-dict",)
-            _agent_log("keywords.py:post:entry", "persist view entry", {"run_id": run_id, "data_keys": _keys}, "H2")
-        except Exception as _ex:
-            _agent_log("keywords.py:post:entry_failed", "request.data failed", {"run_id": run_id, "exc": type(_ex).__name__, "msg": str(_ex)[:200]}, "H2")
-        # #endregion
         try:
             product_id = request.data.get("product_id")
             limit = request.data.get("limit")
@@ -461,6 +451,12 @@ class KeywordPlannerRunPersistMappingsView(APIView):
             max_text_matches = request.data.get("max_text_matches", 60)
             max_enum_maps = request.data.get("max_enum_maps", 120)
             use_llm = request.data.get("use_llm", False)
+            llm_model = (request.data.get("llm_model") or "").strip() or DEFAULT_MAPPING_AI_MODEL
+            if llm_model not in MAPPING_AI_MODELS:
+                return Response(
+                    {"detail": f"Unknown llm_model '{llm_model}'. Allowed: {sorted(MAPPING_AI_MODELS)}"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
             llm_max_keywords = request.data.get("llm_max_keywords", 80)
             dry_run = request.data.get("dry_run", False)
             focus_on = (request.data.get("focus_on") or "").strip() or None
@@ -468,13 +464,10 @@ class KeywordPlannerRunPersistMappingsView(APIView):
             ignore_size_and_marketplace = request.data.get("ignore_size_and_marketplace", False) is True
             focus_head_terms = request.data.get("focus_head_terms", False) is True
             focus_hook_terms = request.data.get("focus_hook_terms", False) is True
-            # #region agent log
-            try:
-                _agent_log("keywords.py:post:before_persist", "calling persist_product_keyword_maps", {"run_id": run_id}, "H1")
-            except Exception:
-                pass
-            # #endregion
-            result = persist_product_keyword_maps(
+            skip_enum_maps = request.data.get("skip_enum_maps", False) is True
+            async_job = request.data.get("async_job", False) is True
+
+            kwargs = dict(
                 run_id=run_id,
                 product_id=product_id,
                 limit=limit,
@@ -486,6 +479,7 @@ class KeywordPlannerRunPersistMappingsView(APIView):
                 max_text_matches=max_text_matches,
                 max_enum_maps=max_enum_maps,
                 use_llm=use_llm,
+                llm_model=llm_model,
                 llm_max_keywords=llm_max_keywords,
                 dry_run=dry_run,
                 focus_on=focus_on,
@@ -493,23 +487,35 @@ class KeywordPlannerRunPersistMappingsView(APIView):
                 ignore_size_and_marketplace=ignore_size_and_marketplace,
                 focus_head_terms=focus_head_terms,
                 focus_hook_terms=focus_hook_terms,
+                skip_enum_maps=skip_enum_maps,
             )
-            # #region agent log
-            try:
-                _agent_log("keywords.py:post:after_persist", "persist returned", dict(result) if isinstance(result, dict) else {}, "H1")
-            except Exception:
-                pass
-            # #endregion
+
+            if async_job:
+                if _mapping_jobs.get(run_id, {}).get("status") == "running":
+                    return Response(
+                        {"run_id": run_id, "job_status": "running", "detail": "Job already running."},
+                        status=status.HTTP_200_OK,
+                    )
+                _mapping_jobs[run_id] = {"status": "running", "started_at": time.time(), "result": None, "error": None}
+
+                def _run():
+                    try:
+                        result = persist_product_keyword_maps(**kwargs)
+                        _mapping_jobs[run_id]["status"] = "done"
+                        _mapping_jobs[run_id]["result"] = result
+                    except Exception as exc:
+                        _mapping_jobs[run_id]["status"] = "error"
+                        _mapping_jobs[run_id]["error"] = str(exc)
+
+                thread = threading.Thread(target=_run, daemon=True)
+                thread.start()
+                return Response({"run_id": run_id, "job_status": "running"}, status=status.HTTP_202_ACCEPTED)
+
+            result = persist_product_keyword_maps(**kwargs)
             return Response(result)
         except ValueError as e:
             return Response({"error": str(e)}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
-            # #region agent log
-            try:
-                _agent_log("keywords.py:post:except", "exception in view", {"exc_type": type(e).__name__, "exc_msg": str(e)[:500]}, "H1,H3")
-            except Exception:
-                pass
-            # #endregion
             payload = {"error": str(e)}
             if getattr(settings, "DEBUG", False):
                 payload["detail"] = traceback.format_exc()
@@ -593,8 +599,11 @@ class KeywordPlannerRunSuggestedTermsView(APIView):
                 .values_list("product_id", flat=True)
                 .distinct()
             )
-            per_product = max(1, max_hook_terms // max(len(product_ids), 1))
-            all_hook = []
+            # Fetch up to 10 hooks per product so each product is represented.
+            # Then round-robin across products (best hook per product first) to
+            # build the final list, so volume from a few products doesn't drown out others.
+            per_product_fetch = 10
+            per_product_hooks: Dict[int, list] = {}
             for pid in product_ids[:50]:
                 hook_list = extract_suggested_hook_terms(
                     run=run,
@@ -602,11 +611,22 @@ class KeywordPlannerRunSuggestedTermsView(APIView):
                     locale_id=locale_id,
                     channel_id=channel_id,
                     head_terms_normalized=head_norm,
-                    max_terms=min(per_product, 20),
+                    max_terms=per_product_fetch,
                 )
-                all_hook.extend(hook_list)
-            all_hook.sort(key=lambda x: (-x["avg_searches"], x["term"]))
-            suggested_hook = all_hook[:max_hook_terms]
+                if hook_list:
+                    per_product_hooks[pid] = hook_list
+            # Round-robin: take 1 hook per product in volume-desc order until max_hook_terms
+            all_hook = []
+            round_idx = 0
+            product_queues = list(per_product_hooks.values())
+            while len(all_hook) < max_hook_terms and any(len(q) > round_idx for q in product_queues):
+                for q in product_queues:
+                    if round_idx < len(q):
+                        all_hook.append(q[round_idx])
+                    if len(all_hook) >= max_hook_terms:
+                        break
+                round_idx += 1
+            suggested_hook = all_hook
 
         product_ids_in_hook = list({h["product_id"] for h in suggested_hook})
         product_variants = {}
@@ -645,6 +665,20 @@ class KeywordPlannerRunSuggestedTermsView(APIView):
             )
             for i, h in enumerate(suggested_head):
                 h["meaning_en"] = meanings_en[i] if i < len(meanings_en) else None
+
+        use_ai_reason = request.query_params.get("use_ai_reason", "").lower() in ("1", "true", "yes")
+        if use_ai_reason and (suggested_head or suggested_hook):
+            head_reasons, hook_reasons = generate_term_reasons(
+                suggested_head,
+                suggested_hook,
+                product_type_label=product_type_default_label,
+                product_type_code=getattr(run_product_type, "code", None) if run_product_type else None,
+            )
+            for i, h in enumerate(suggested_head):
+                h["reason"] = head_reasons[i] if i < len(head_reasons) else None
+            for i, h in enumerate(suggested_hook):
+                if not (h.get("reason") or "").strip():
+                    h["reason"] = hook_reasons[i] if i < len(hook_reasons) else None
 
         return Response({
             "run_id": run.id,
@@ -838,3 +872,278 @@ class KeywordPlannerRunProductMapDetailView(APIView):
             )
         obj.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class KeywordPlannerRunProductMapsClearAllView(APIView):
+    """
+    DANGEROUS: Delete ALL ProductKeywordMaps for a planner run.
+
+    GET  /keywords/planner-run/{run_id}/product-maps/clear-all/
+        Returns a count of mappings that would be deleted (preview, no changes).
+
+    DELETE /keywords/planner-run/{run_id}/product-maps/clear-all/
+        Body: {"confirm": true}
+        Deletes all ProductKeywordMap rows for this run.
+        Returns {"deleted": int, "run_id": int}.
+    """
+
+    def get(self, request, run_id: int):
+        if not PlannerRun.objects.filter(id=run_id).exists():
+            return Response({"detail": "Run not found."}, status=status.HTTP_404_NOT_FOUND)
+        count = ProductKeywordMap.objects.filter(run_id=run_id).count()
+        return Response({"run_id": run_id, "count": count}, status=status.HTTP_200_OK)
+
+    def delete(self, request, run_id: int):
+        confirm = request.data.get("confirm")
+        if confirm is not True:
+            return Response(
+                {
+                    "detail": (
+                        "This will delete all keyword mappings for this run. "
+                        "Send {\"confirm\": true} to proceed."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not PlannerRun.objects.filter(id=run_id).exists():
+            return Response({"detail": "Run not found."}, status=status.HTTP_404_NOT_FOUND)
+        deleted, _ = ProductKeywordMap.objects.filter(run_id=run_id).delete()
+        return Response({"run_id": run_id, "deleted": deleted}, status=status.HTTP_200_OK)
+
+
+class KeywordPlannerRunProposeTemplateView(APIView):
+    """
+    GET /keywords/planner-run/{run_id}/propose-template/
+
+    Returns attributes ordered by total mapped keyword search volume for this run.
+    Optionally asks an AI to reorder / annotate them with semantic reasoning.
+
+    Query params:
+        top (int, default 8): maximum number of attributes to return
+        use_ai (0/1, default 0): ask AI to reorder and add a reason per attribute
+
+    Response:
+        {
+            "run_id": 12,
+            "source": "volume" | "ai",
+            "proposed": [
+                {
+                    "attribute_id": 5,
+                    "attribute_code": "couleur",
+                    "total_vol": 45000,
+                    "keyword_count": 12,
+                    "reason": "Colour is the primary differentiator buyers use in searches."
+                },
+                ...
+            ]
+        }
+    """
+
+    def get(self, request, run_id: int):
+        import json, os
+        run = PlannerRun.objects.select_related("product_type", "locale").filter(id=run_id).first()
+        if not run:
+            return Response({"detail": "Run not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        top = int(request.query_params.get("top", 8))
+        use_ai = request.query_params.get("use_ai", "").lower() in ("1", "true", "yes")
+
+        # ── Step 1: volume-based ranking ─────────────────────────────────────
+        kw_vol_sq = (
+            Metric.objects.filter(keyword_id=OuterRef("keyword_id"))
+            .values("keyword_id")
+            .annotate(v=Max("avg_searches"))
+            .values("v")[:1]
+        )
+
+        rows = (
+            ProductKeywordMap.objects.filter(run=run, attribute__isnull=False, attribute__use_in_title=True)
+            .annotate(kw_vol=Subquery(kw_vol_sq, output_field=IntegerField()))
+            .values("attribute_id", "attribute__code", "attribute__data_type", "attribute__unit")
+            .annotate(
+                total_vol=Sum(Coalesce("kw_vol", Value(0))),
+                keyword_count=Count("keyword_id", distinct=True),
+            )
+            .order_by("-total_vol")[:top]
+        )
+
+        proposed = [
+            {
+                "attribute_id": r["attribute_id"],
+                "attribute_code": r["attribute__code"],
+                "data_type": r["attribute__data_type"],
+                "unit": r["attribute__unit"],
+                "total_vol": r["total_vol"] or 0,
+                "keyword_count": r["keyword_count"],
+                "reason": None,
+            }
+            for r in rows
+        ]
+
+        # ── Identify fixed axis attributes (variant_level=True) ──────────────
+        # These are always position 2 in the title (after head term).
+        # They are excluded from the AI candidate list.
+        axis_attr_codes: set = set()
+        axis_attributes = []
+        if run.product_type:
+            for pta in ProductTypeAttribute.objects.filter(
+                product_type=run.product_type, variant_level=True
+            ).select_related("attribute").order_by("id"):
+                axis_attr_codes.add(pta.attribute.code)
+                axis_attributes.append({
+                    "attribute_id": pta.attribute.id,
+                    "attribute_code": pta.attribute.code,
+                    "fixed": True,
+                    "reason": None,
+                })
+
+        # Remove axis attributes from the candidate list — they have a fixed slot
+        proposed = [p for p in proposed if p["attribute_code"] not in axis_attr_codes]
+
+        if not proposed and not axis_attributes:
+            return Response({"run_id": run_id, "source": "volume", "axis_attributes": [], "proposed": []})
+
+        # ── Step 2: AI reorder + reasons ─────────────────────────────────────
+        if use_ai:
+            pt = run.product_type
+            pt_label = (getattr(pt, "default_label", "") or "").strip() if pt else ""
+            pt_code = (getattr(pt, "code", "") or "").strip() if pt else ""
+            pt_category = (getattr(pt, "main_category", "") or "").strip() if pt else ""
+            product_context = pt_label or pt_code or "product"
+            if pt_category:
+                product_context = f"{product_context} ({pt_category})"
+
+            # Locale / language context
+            locale_code = run.locale.code if run.locale_id else "en"  # e.g. "fr-FR"
+            lang_name = {
+                "fr": "French", "de": "German", "es": "Spanish", "it": "Italian",
+                "pt": "Portuguese", "nl": "Dutch", "pl": "Polish", "en": "English",
+                "ja": "Japanese", "zh": "Chinese", "ko": "Korean", "ar": "Arabic",
+                "sv": "Swedish", "da": "Danish", "fi": "Finnish", "no": "Norwegian",
+            }.get(locale_code.split("-")[0].lower(), locale_code)
+
+            # Sample top keywords from the run for extra context
+            sample_kws = list(
+                ProductKeywordMap.objects.filter(run=run)
+                .annotate(kw_vol=Subquery(kw_vol_sq, output_field=IntegerField()))
+                .select_related("keyword")
+                .order_by("-kw_vol")
+                .values_list("keyword__term", flat=True)
+                .distinct()[:25]
+            )
+            sample_kw_lines = ", ".join(f'"{t}"' for t in sample_kws if t)
+
+            axis_label = ", ".join(a["attribute_code"] for a in axis_attributes) if axis_attributes else "none"
+
+            attr_lines = "\n".join(
+                f"{i+3}. {p['attribute_code']}"
+                f"{' [' + p['data_type'] + ']' if p.get('data_type') else ''}"
+                f"{' [unit: ' + p['unit'] + ']' if p.get('unit') else ''}"
+                f" — {p['total_vol']:,} searches, {p['keyword_count']} keywords"
+                for i, p in enumerate(proposed)
+            ) if proposed else "(no additional candidates)"
+
+            system_prompt = (
+                "You are an e-commerce SEO expert who determines which product attributes to include "
+                "in a marketplace title and in what order. "
+                "You work across all product categories (furniture, electronics, fashion, food, toys, …) "
+                "and all languages. "
+                f"The target marketplace language is {lang_name} (locale: {locale_code}). "
+                "Write your reasons in that language. "
+                "The title always starts with: [head term] (position 1, fixed) then [variation axis] (position 2, fixed). "
+                "Your job is to select and order the remaining attributes for positions 3 onwards. "
+                "You may exclude attributes that add no buyer value for this product type. "
+                "Do NOT add new attributes — only select and order from the ones provided. "
+                "Return valid JSON only."
+            )
+            user_prompt = (
+                f"Product type: {product_context}\n"
+                f"Locale: {locale_code}\n\n"
+                f"FIXED title structure (do NOT change these):\n"
+                f"  Position 1: [head term] — product type label (e.g. '{product_context}')\n"
+                f"  Position 2: [{axis_label}] — variation axis, always second\n\n"
+                + (f"Top buyer search queries:\n{sample_kw_lines}\n\n" if sample_kw_lines else "")
+                + f"Candidate attributes for positions 3+ (ranked by search volume):\n{attr_lines}\n\n"
+                "Task: Select the most buyer-relevant attributes for positions 3+ and order them best-first. "
+                "You may drop attributes that are redundant or low-value for this product type. "
+                "Consider semantic flow: broad/defining attributes before narrow/specific ones.\n\n"
+                'Return JSON: {"proposed": [{"attribute_code": "...", "reason": "..."}, ...]}'
+            )
+
+            raw: Optional[str] = None
+            model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+
+            try:
+                if model.startswith("claude-"):
+                    api_key = os.environ.get("ANTHROPIC_API_KEY")
+                    if api_key:
+                        import anthropic
+                        client = anthropic.Anthropic(api_key=api_key)
+                        msg = client.messages.create(
+                            model=model, max_tokens=900,
+                            system=system_prompt,
+                            messages=[{"role": "user", "content": user_prompt}],
+                            temperature=0,
+                        )
+                        raw = msg.content[0].text if msg.content else None
+                elif model.startswith("gemini-"):
+                    api_key = os.environ.get("GOOGLE_AI_API_KEY")
+                    if api_key:
+                        import google.generativeai as genai
+                        genai.configure(api_key=api_key)
+                        g = genai.GenerativeModel(
+                            model_name=model,
+                            system_instruction=system_prompt,
+                            generation_config={"temperature": 0, "max_output_tokens": 900, "response_mime_type": "application/json"},
+                        )
+                        raw = g.generate_content(user_prompt).text
+                else:
+                    api_key = os.environ.get("OPENAI_API_KEY")
+                    if api_key:
+                        from openai import OpenAI
+                        client = OpenAI(api_key=api_key)
+                        resp = client.chat.completions.create(
+                            model=model, temperature=0, max_tokens=900,
+                            messages=[
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": user_prompt},
+                            ],
+                        )
+                        raw = resp.choices[0].message.content or None
+            except Exception:
+                pass
+
+            if raw:
+                try:
+                    data = json.loads(raw.strip())
+                    ai_list = data.get("proposed") or []
+                    # Rebuild proposed in AI order, preserving volume data
+                    by_code = {p["attribute_code"]: p for p in proposed}
+                    reordered = []
+                    seen = set()
+                    for item in ai_list:
+                        code = (item.get("attribute_code") or "").strip()
+                        # AI must not sneak in axis attributes
+                        if code in by_code and code not in seen and code not in axis_attr_codes:
+                            entry = dict(by_code[code])
+                            entry["reason"] = (item.get("reason") or "").strip() or None
+                            reordered.append(entry)
+                            seen.add(code)
+                    # Append any attributes AI omitted (keep volume order)
+                    for p in proposed:
+                        if p["attribute_code"] not in seen:
+                            reordered.append(p)
+                    proposed = reordered
+                    # Clean internal fields before returning
+                    for p in proposed:
+                        p.pop("data_type", None)
+                        p.pop("unit", None)
+                    return Response({"run_id": run_id, "source": "ai", "axis_attributes": axis_attributes, "proposed": proposed})
+                except Exception:
+                    pass
+
+        # Clean internal fields
+        for p in proposed:
+            p.pop("data_type", None)
+            p.pop("unit", None)
+        return Response({"run_id": run_id, "source": "volume", "axis_attributes": axis_attributes, "proposed": proposed})

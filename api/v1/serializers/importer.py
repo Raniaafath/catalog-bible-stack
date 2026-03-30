@@ -1,7 +1,7 @@
 from rest_framework import serializers
 
 from catalog.models import Attribute
-from importer.models import AttributeMapping, CategoryBatch, ImportRow, ProductImport
+from importer.models import ImportColumnMapping, CategoryBatch, ImportRow, ProductImport
 
 
 class ProductImportSerializer(serializers.ModelSerializer):
@@ -18,6 +18,7 @@ class ProductImportSerializer(serializers.ModelSerializer):
             "error_count",
             "parse_error_message",
             "group_by_product_key",
+            "category",
         ]
 
 
@@ -46,7 +47,7 @@ class CategoryBatchSerializer(serializers.ModelSerializer):
         ]
 
 
-class AttributeMappingSerializer(serializers.ModelSerializer):
+class ImportColumnMappingSerializer(serializers.ModelSerializer):
     category_batch_id = serializers.PrimaryKeyRelatedField(
         source="category_batch",
         queryset=CategoryBatch.objects.all(),
@@ -59,7 +60,7 @@ class AttributeMappingSerializer(serializers.ModelSerializer):
     )
 
     class Meta:
-        model = AttributeMapping
+        model = ImportColumnMapping
         fields = [
             "id",
             "category_batch_id",
@@ -70,3 +71,7 @@ class AttributeMappingSerializer(serializers.ModelSerializer):
             "confidence",
             "created_at",
         ]
+
+
+# Backward-compatibility alias.
+AttributeMappingSerializer = ImportColumnMappingSerializer

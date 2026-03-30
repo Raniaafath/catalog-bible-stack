@@ -13,9 +13,8 @@ You're importing a CSV file with products and their variants (like different col
 
 ## � Documentation Quick Links
 
-- **[Attribute Research Features](ATTRIBUTE_RESEARCH_FEATURES.md)** - 🔥 NEW! Multi-field search & tooltips
-- **[Frontend Mapping Guide](FRONTEND_MAPPING_GUIDE.md)** - How to use the updated UI with search
-- **[Before & After](BEFORE_AFTER_RESEARCH.md)** - See the improvements
+- **[Attribute Research Features](ATTRIBUTE_RESEARCH_FEATURES.md)** - Multi-field search & tooltips in the mapping UI
+- **[Frontend Mapping Guide](FRONTEND_MAPPING_GUIDE.md)** - How to use the mapping UI
 - **[Quick Reference](QUICK_REFERENCE.md)** - Cheat sheet for mapping
 - **[CSV Structure Examples](CSV_STRUCTURE_EXAMPLES.md)** - See different CSV format options
 - **[Quick Start Guide](QUICK_START.md)** - Step-by-step tutorial
@@ -133,13 +132,7 @@ Product: bike-001
 ## 🔮 What Happens Next (LATER Steps)
 
 ### When You Need Titles:
-```python
-from catalog.services import generate_variant_title
-
-variant = Variant.objects.get(sku='BIKE-001-RED-M')
-title = generate_variant_title(variant)
-# Uses stored axes → "Mountain Bike - Red Medium"
-```
+Use the **Listing Groups** workflow: create a listing group, set axes, create a template, then generate titles via `POST /api/v1/channel-listings/{id}/generate-titles/`. See [LISTING_GROUP_WORKFLOW.md](LISTING_GROUP_WORKFLOW.md).
 
 ### When Building Frontend:
 - Show variation axes as dropdowns/filters
@@ -164,7 +157,7 @@ title = generate_variant_title(variant)
 
 **Detailed Guides:**
 - **[CSV_STRUCTURE_EXAMPLES.md](CSV_STRUCTURE_EXAMPLES.md)** - All CSV format options
-- **[IMPORT_VS_TITLES.md](IMPORT_VS_TITLES.md)** - Import vs title generation
+- **[LISTING_GROUP_WORKFLOW.md](LISTING_GROUP_WORKFLOW.md)** - Full title generation workflow after import
 - **[SIMPLE_GROUPING_WORKFLOW.md](SIMPLE_GROUPING_WORKFLOW.md)** - Complete simple workflow guide (Recommended)
 
 ---

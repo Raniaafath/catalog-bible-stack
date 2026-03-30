@@ -13,6 +13,9 @@ class TitleGenerationRequest:
     context: str = "title"
     listing_id: Optional[int] = None
     template_id: Optional[int] = None
+    improve_title: bool = False
+    title_ai_model: str = ""
+    title_ai_instructions: str = ""
 
 
 @dataclass(frozen=True)

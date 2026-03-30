@@ -3,6 +3,7 @@ from rest_framework import serializers
 from catalog.models import Attribute, Product, ProductType, Variant
 from content.models import Locale
 from kw.models import PlannerRun
+from pub.services.ai_constants import DEFAULT_DESCRIPTION_AI_MODEL, DESCRIPTION_AI_MODELS
 from pub.models import (
     Channel,
     ChannelListing,
@@ -100,6 +101,13 @@ class ChannelLocalePolicySerializer(serializers.ModelSerializer):
             "rules_json",
         ]
         read_only_fields = ["id"]
+        extra_kwargs = {
+            # policy_set and locale are supplied via policy_set_id / locale_id
+            # write-only helper fields; mark the FK fields as not required so
+            # DRF validation doesn't reject the request before create() runs.
+            "policy_set": {"required": False},
+            "locale": {"required": False},
+        }
 
     def validate_title_max_len(self, value):
         if value < 1:
@@ -136,32 +144,45 @@ class ChannelLocalePolicySerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Bullet max length cannot exceed 1000.")
         return value
 
+    def validate(self, attrs):
+        """Ensure policy_set and locale are resolvable before create/update."""
+        from pub.models import ChannelPolicySet
+        errors = {}
+
+        policy_set_id = attrs.get("policy_set_id")
+        if policy_set_id and not attrs.get("policy_set"):
+            try:
+                attrs["policy_set"] = ChannelPolicySet.objects.get(id=policy_set_id)
+            except ChannelPolicySet.DoesNotExist:
+                errors["policy_set_id"] = f"Policy set with id={policy_set_id} does not exist."
+
+        locale_id = attrs.get("locale_id")
+        if locale_id and not attrs.get("locale"):
+            try:
+                attrs["locale"] = Locale.objects.get(id=locale_id)
+            except Locale.DoesNotExist:
+                errors["locale_id"] = f"Locale with id={locale_id} does not exist."
+
+        if not attrs.get("policy_set"):
+            errors["policy_set_id"] = "A policy set is required. Select a channel and policy set."
+        if not attrs.get("locale"):
+            errors["locale_id"] = "A locale is required."
+
+        if errors:
+            raise serializers.ValidationError(errors)
+
+        return attrs
+
     def create(self, validated_data):
         """Handle policy_set_id and locale_id if provided"""
-        policy_set_id = validated_data.pop("policy_set_id", None)
-        locale_id = validated_data.pop("locale_id", None)
-        
-        if policy_set_id:
-            from pub.models import ChannelPolicySet
-            validated_data["policy_set"] = ChannelPolicySet.objects.get(id=policy_set_id)
-        
-        if locale_id:
-            validated_data["locale"] = Locale.objects.get(id=locale_id)
-        
+        validated_data.pop("policy_set_id", None)
+        validated_data.pop("locale_id", None)
         return super().create(validated_data)
 
     def update(self, instance, validated_data):
-        """Handle policy_set_id and locale_id if provided"""
-        policy_set_id = validated_data.pop("policy_set_id", None)
-        locale_id = validated_data.pop("locale_id", None)
-        
-        if policy_set_id:
-            from pub.models import ChannelPolicySet
-            validated_data["policy_set"] = ChannelPolicySet.objects.get(id=policy_set_id)
-        
-        if locale_id:
-            validated_data["locale"] = Locale.objects.get(id=locale_id)
-        
+        """Handle policy_set_id and locale_id — already resolved in validate()"""
+        validated_data.pop("policy_set_id", None)
+        validated_data.pop("locale_id", None)
         return super().update(instance, validated_data)
 
 
@@ -253,6 +274,17 @@ class TitleGenerateRequestSerializer(serializers.Serializer):
         allow_null=True,
     )
     context = serializers.CharField(required=False, default="title")
+    improve_title = serializers.BooleanField(required=False, default=False)
+    title_ai_model = serializers.CharField(required=False, allow_blank=True, default=DEFAULT_DESCRIPTION_AI_MODEL)
+    title_ai_instructions = serializers.CharField(required=False, allow_blank=True, default="")
+
+    def validate_title_ai_model(self, value: str) -> str:
+        value = (value or "").strip() or DEFAULT_DESCRIPTION_AI_MODEL
+        if value not in DESCRIPTION_AI_MODELS:
+            raise serializers.ValidationError(
+                f"Unsupported model '{value}'. Allowed: {', '.join(sorted(DESCRIPTION_AI_MODELS))}"
+            )
+        return value
 
     def validate_locale_code(self, value: str) -> str:
         if not Locale.objects.filter(code=value).exists():
@@ -315,6 +347,16 @@ class ContentPreviewRequestSerializer(serializers.Serializer):
     planner_run_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     context = serializers.CharField(required=False, default="title")
     include_descriptions = serializers.BooleanField(required=False, default=False)
+    description_model = serializers.CharField(required=False, allow_blank=True, default=DEFAULT_DESCRIPTION_AI_MODEL)
+
+    def validate_description_model(self, value: str) -> str:
+        value = (value or "").strip() or DEFAULT_DESCRIPTION_AI_MODEL
+        if value not in DESCRIPTION_AI_MODELS:
+            raise serializers.ValidationError(
+                f"Unsupported model '{value}'. Allowed: {', '.join(sorted(DESCRIPTION_AI_MODELS))}"
+            )
+        return value
+    description_instructions = serializers.CharField(required=False, allow_blank=True, default="")
 
     def validate_locale_code(self, value: str) -> str:
         if not Locale.objects.filter(code=value).exists():
@@ -336,6 +378,37 @@ class ContentPreviewRequestSerializer(serializers.Serializer):
             return value
         if not PlannerRun.objects.filter(id=value).exists():
             raise serializers.ValidationError("Unknown planner_run_id.")
+        return value
+
+
+class SaveContentSelectionSerializer(serializers.Serializer):
+    """Save current preview as a draft content selection (description + bullets)."""
+
+    variant_id = serializers.IntegerField(min_value=1)
+    locale_code = serializers.CharField()
+    channel_code = serializers.CharField()
+    context = serializers.CharField(required=False, default="title")
+    description = serializers.CharField(allow_blank=True, default="")
+    bullets = serializers.ListField(
+        child=serializers.CharField(allow_blank=True),
+        required=False,
+        allow_empty=True,
+        default=list,
+    )
+
+    def validate_locale_code(self, value: str) -> str:
+        if not Locale.objects.filter(code=value).exists():
+            raise serializers.ValidationError("Unknown locale_code.")
+        return value
+
+    def validate_channel_code(self, value: str) -> str:
+        if not Channel.objects.filter(code=value, is_active=True).exists():
+            raise serializers.ValidationError("Unknown or inactive channel_code.")
+        return value
+
+    def validate_variant_id(self, value):
+        if not Variant.objects.filter(id=value).exists():
+            raise serializers.ValidationError("Unknown variant_id.")
         return value
 
 
@@ -430,7 +503,7 @@ class GenerationBatchCreateSerializer(serializers.Serializer):
 
 class ExportJobCreateSerializer(serializers.Serializer):
     profile_id = serializers.IntegerField(min_value=1)
-    batch_id = serializers.IntegerField(min_value=1)
+    batch_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
 
     def validate_profile_id(self, value):
         if not ExportProfile.objects.filter(id=value, is_active=True).exists():
@@ -438,20 +511,8 @@ class ExportJobCreateSerializer(serializers.Serializer):
         return value
 
     def validate_batch_id(self, value):
-        if not GenerationBatch.objects.filter(id=value).exists():
+        if value is not None and not GenerationBatch.objects.filter(id=value).exists():
             raise serializers.ValidationError("Unknown batch_id.")
-        return value
-
-    def validate_channel_code(self, value: str) -> str:
-        if not Channel.objects.filter(code=value, is_active=True).exists():
-            raise serializers.ValidationError("Unknown or inactive channel_code.")
-        return value
-
-    def validate_planner_run_id(self, value):
-        if value is None:
-            return value
-        if not PlannerRun.objects.filter(id=value).exists():
-            raise serializers.ValidationError("Unknown planner_run_id.")
         return value
 
 
@@ -551,20 +612,39 @@ class ExportProfileSerializer(serializers.ModelSerializer):
 
 
 class ExportJobSerializer(serializers.ModelSerializer):
+    profile = serializers.SerializerMethodField()
+    file_url = serializers.SerializerMethodField()
+
     class Meta:
         model = ExportJob
         fields = [
             "id",
             "profile_id",
+            "profile",
             "batch_id",
             "status",
-            "result_file",
+            "file_url",
             "stats_json",
             "error_message",
             "started_at",
             "finished_at",
             "created_at",
         ]
+
+    def get_profile(self, obj):
+        try:
+            return str(obj.profile)
+        except Exception:
+            return ""
+
+    def get_file_url(self, obj):
+        if not obj.result_file:
+            return None
+        request = self.context.get("request")
+        url = f"/api/v1/exports/{obj.id}/download/"
+        if request:
+            return request.build_absolute_uri(url)
+        return url
 
 
 class GenerationRunSerializer(serializers.ModelSerializer):
@@ -645,9 +725,6 @@ class ChannelListingCreateSerializer(serializers.Serializer):
         if not Product.objects.filter(id=value).exists():
             raise serializers.ValidationError("Unknown product_id.")
         return value
-    
-    def validate(self, attrs):
-        return attrs
 
     def validate_channel_id(self, value):
         if not Channel.objects.filter(id=value, is_active=True).exists():
@@ -675,7 +752,7 @@ class MoveVariantsSerializer(serializers.Serializer):
         if len(value) != variants.count():
             known = {v.id for v in variants}
             missing = [vid for vid in value if vid not in known]
-            raise serializers.ValidationError(f"Unknown variant_ids: {missing}")
+            raise serializers.ValidationError(f"Unknown variant_ids: {', '.join(str(v) for v in missing)}")
         return value
 
 
