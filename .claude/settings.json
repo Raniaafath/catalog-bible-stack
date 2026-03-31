@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -W ignore manage.py check)",
+      "Bash(ls -d */)"
+    ]
+  }
+}
